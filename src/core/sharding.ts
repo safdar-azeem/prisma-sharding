@@ -1,16 +1,15 @@
 import type {
   ShardingConfig,
-  ShardConfig,
   ShardHealth,
   FindFirstResult,
   CrossShardResult,
   ShardingLogger,
   ShardResult,
 } from '../types';
-import { DEFAULTS, ERROR_MESSAGES } from '../constants';
-import { ConfigError, ShardingError } from './errors';
-import { ShardManager } from './manager';
 import { ShardRouter } from './router';
+import { ShardManager } from './manager';
+import { ConfigError, ShardingError } from './errors';
+import { DEFAULTS, ERROR_MESSAGES } from '../constants';
 import { createDefaultLogger, validateUrl } from '../utils';
 
 export class PrismaSharding<TClient> {
