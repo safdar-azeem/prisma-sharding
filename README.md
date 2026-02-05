@@ -1,6 +1,6 @@
 # Prisma Sharding
 
-Lightweight database sharding library for Prisma with connection pooling, health monitoring, and circuit breaker support.
+Lightweight database sharding library for Prisma with connection pooling, health monitoring, and CLI tools.
 
 ## Installation
 
@@ -9,6 +9,8 @@ yarn add prisma-sharding
 # or
 npm install prisma-sharding
 ```
+
+> Don't forget to follow me on [GitHub](https://github.com/safdar-azeem)!
 
 ## Quick Start
 
@@ -21,7 +23,6 @@ const sharding = new PrismaSharding<PrismaClient>({
   shards: [
     { id: 'shard_1', url: process.env.SHARD_1_URL! },
     { id: 'shard_2', url: process.env.SHARD_2_URL! },
-    { id: 'shard_3', url: process.env.SHARD_3_URL! },
   ],
   strategy: 'modulo', // 'modulo' | 'consistent-hash'
   createClient: (url) => {
@@ -30,128 +31,91 @@ const sharding = new PrismaSharding<PrismaClient>({
   },
 });
 
-// Initialize connections
 await sharding.connect();
 ```
 
-## Usage
+## API
 
-### Get Shard by Key
+| Method                       | Description                                   |
+| ---------------------------- | --------------------------------------------- |
+| `getShard(key)`              | Get client for a given key                    |
+| `getShardById(shardId)`      | Get client by shard ID                        |
+| `getRandomShard()`           | Get random shard (for new records)            |
+| `findFirst(fn)`              | Search across all shards, return first result |
+| `runOnAll(fn)`               | Execute on all shards                         |
+| `getHealth()`                | Get health status of all shards               |
+| `connect()` / `disconnect()` | Lifecycle methods                             |
 
-```typescript
-// Get client for existing user (routed by user ID)
-const client = sharding.getShard(userId);
-const user = await client.user.findUnique({ where: { id: userId } });
+## CLI Tools
 
-// Get shard with metadata
-const { client, shardId } = sharding.getShardWithInfo(userId);
-```
+The package includes CLI tools for common sharding operations. No need to write custom scripts!
 
-### Random Shard (New Records)
+### Setup
 
-```typescript
-// Get random shard for creating new user (ensures even distribution)
-const client = sharding.getRandomShard();
-const newUser = await client.user.create({ data: { email, username } });
-```
+Add to your `package.json`:
 
-### Cross-Shard Search
-
-```typescript
-// Find user by email across ALL shards (parallel execution)
-const { result: user, client } = await sharding.findFirst(async (c) =>
-  c.user.findFirst({ where: { email } })
-);
-
-if (user && client) {
-  // Continue operations on the found shard
-  await client.user.update({
-    where: { id: user.id },
-    data: { lastLogin: new Date() },
-  });
+```json
+{
+  "scripts": {
+    "db:studio:all": "prisma-sharding-studio",
+    "migrate:shards": "prisma-sharding-migrate",
+    "test:shards": "prisma-sharding-test"
+  }
 }
 ```
 
-### Execute on All Shards
+### Environment Variables
 
-```typescript
-// Get counts from all shards
-const counts = await sharding.runOnAll(async (client) => client.user.count());
-const totalUsers = counts.reduce((sum, count) => sum + count, 0);
-
-// With detailed results (includes errors)
-const results = await sharding.runOnAllWithDetails(async (client, shardId) => {
-  return { shardId, count: await client.user.count() };
-});
+```bash
+SHARD_COUNT=3
+SHARD_1_URL=postgresql://user:pass@host:5432/db1
+SHARD_2_URL=postgresql://user:pass@host:5432/db2
+SHARD_3_URL=postgresql://user:pass@host:5432/db3
+SHARD_ROUTING_STRATEGY=modulo  # or consistent-hash
+SHARD_STUDIO_BASE_PORT=51212   # optional, for studio
 ```
 
-### Health Monitoring
+### Commands
 
-```typescript
-// Get health of all shards
-const health = sharding.getHealth();
-// Returns: [{ shardId, isHealthy, latencyMs, lastChecked, ... }]
+#### `prisma-sharding-migrate`
 
-// Get specific shard health
-const shard1Health = sharding.getHealthByShard('shard_1');
+Push schema to all shards using `prisma db push`.
+
+```bash
+yarn migrate:shards
 ```
 
-### Lifecycle
+#### `prisma-sharding-studio`
 
-```typescript
-// Graceful shutdown
-await sharding.disconnect();
+Start Prisma Studio for all shards on sequential ports.
 
-// Check connection status
-if (sharding.isConnected()) {
-  // ...
-}
+```bash
+yarn db:studio:all
+# Opens shard_1 on :51212, shard_2 on :51213, etc.
+```
+
+#### `prisma-sharding-test`
+
+Test connections to all shards.
+
+```bash
+yarn test:shards
 ```
 
 ## Configuration
 
-| Option                    | Type                            | Default    | Description                               |
-| ------------------------- | ------------------------------- | ---------- | ----------------------------------------- |
-| `shards`                  | `ShardConfig[]`                 | Required   | Array of shard configurations             |
-| `strategy`                | `'modulo' \| 'consistent-hash'` | `'modulo'` | Routing algorithm                         |
-| `createClient`            | `(url, shardId) => TClient`     | Required   | Factory function to create Prisma clients |
-| `healthCheckIntervalMs`   | `number`                        | `30000`    | Health check frequency                    |
-| `circuitBreakerThreshold` | `number`                        | `3`        | Failures before marking unhealthy         |
-| `logger`                  | `ShardingLogger`                | Console    | Custom logger                             |
-
-### Shard Config
-
-```typescript
-interface ShardConfig {
-  id: string; // Unique identifier (e.g., 'shard_1')
-  url: string; // PostgreSQL connection string
-  weight?: number; // Optional weight for distribution
-  isReadReplica?: boolean;
-}
-```
-
-## Routing Strategies
-
-### Modulo (Default)
-
-Simple and fast. Uses `hash(key) % shardCount` for routing.
-
-```typescript
-strategy: 'modulo';
-```
-
-### Consistent Hash
-
-Minimizes data movement when adding/removing shards.
-
-```typescript
-strategy: 'consistent-hash';
-```
+| Option                    | Type                            | Default    | Description                       |
+| ------------------------- | ------------------------------- | ---------- | --------------------------------- |
+| `shards`                  | `ShardConfig[]`                 | Required   | Array of shard configurations     |
+| `strategy`                | `'modulo' \| 'consistent-hash'` | `'modulo'` | Routing algorithm                 |
+| `createClient`            | `(url, shardId) => TClient`     | Required   | Factory to create Prisma clients  |
+| `healthCheckIntervalMs`   | `number`                        | `30000`    | Health check frequency            |
+| `circuitBreakerThreshold` | `number`                        | `3`        | Failures before marking unhealthy |
 
 ## Error Handling
 
 ```typescript
-import { ShardingError, ConfigError, ConnectionError, RoutingError } from 'prisma-sharding';
+import { ShardingError, ConfigError, ConnectionError } from 'prisma-sharding';
 
 try {
   const client = sharding.getShard(userId);
@@ -162,18 +126,9 @@ try {
 }
 ```
 
-## Custom Logger
+## Author
 
-```typescript
-const sharding = new PrismaSharding({
-  // ...config,
-  logger: {
-    info: (msg) => myLogger.info(msg),
-    warn: (msg) => myLogger.warn(msg),
-    error: (msg) => myLogger.error(msg),
-  },
-});
-```
+[safdar-azeem](https://github.com/safdar-azeem)
 
 ## License
 
