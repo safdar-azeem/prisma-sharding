@@ -12,9 +12,11 @@ npm install prisma-sharding
 
 > Don't forget to follow me on [GitHub](https://github.com/safdar-azeem)!
 
-## Quick Start
+## Step 1: Create Sharding Connection
 
 ```typescript
+// src/config/prisma.ts
+
 import { PrismaSharding } from 'prisma-sharding';
 import { PrismaClient } from '@/generated/prisma';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -38,13 +40,122 @@ await sharding.connect();
 
 | Method                       | Description                                   |
 | ---------------------------- | --------------------------------------------- |
-| `getShard(key)`              | Get client for a given key                    |
-| `getShardById(shardId)`      | Get client by shard ID                        |
+| `getShard(key)`              | Get Prisma client for a given key             |
+| `getShardById(shardId)`      | Get Prisma client by shard ID                 |
 | `getRandomShard()`           | Get random shard (for new records)            |
 | `findFirst(fn)`              | Search across all shards, return first result |
 | `runOnAll(fn)`               | Execute on all shards                         |
 | `getHealth()`                | Get health status of all shards               |
 | `connect()` / `disconnect()` | Lifecycle methods                             |
+
+### Step 2: Create a User (Assign to a Shard)
+
+New records should be created on a random shard for even distribution.
+
+```ts
+import { sharding } from '@/config/prisma';
+
+const client = sharding.getRandomShard();
+
+const user = await client.user.create({
+  data: {
+    email: 'user@example.com',
+    username: 'new_user',
+  },
+});
+```
+
+## Step 3: Access User by ID (Shard Routing)
+
+When you have a user ID, Prisma Sharding routes you to the correct shard automatically.
+
+```ts
+const userId = 'abc123';
+
+const client = sharding.getShard(userId);
+
+const user = await client.user.findUnique({
+  where: { id: userId },
+});
+```
+
+`Important rule:`
+
+Once you get the shard client using a user ID, **all future operations for that user must use this same client**.
+
+That includes:
+
+- Reading user data
+- Updating user data
+- Creating related records (profiles, posts, settings, etc)
+
+Every user belongs to exactly one shard. Their entire data lives on that shard only.
+
+Do **not** switch shards or use a random shard for user related actions.
+
+Always do this:
+
+```ts
+const client = sharding.getShard(userId);
+```
+
+This guarantees all user data stays on the correct shard and avoids cross shard bugs.
+
+### Step 4: Find User Without ID (Cross Shard Search)
+
+If you do not have the user ID, search all shards in parallel.
+Use this only when necessary.
+
+```typescript
+// Find user by email across ALL shards (parallel execution)
+const { result: user, client } = await sharding.findFirst(async (c) =>
+  c.user.findFirst({ where: { email } })
+);
+
+if (user && client) {
+  // Continue operations on the found shard
+  await client.user.update({
+    where: { id: user.id },
+    data: { lastLogin: new Date() },
+  });
+}
+```
+
+## Step 5: Run on All Shards (Admin or Analytics)
+
+```typescript
+// Get counts from all shards
+const counts = await sharding.runOnAll(async (client) => client.user.count());
+const totalUsers = counts.reduce((sum, count) => sum + count, 0);
+
+// With detailed results (includes errors)
+const results = await sharding.runOnAllWithDetails(async (client, shardId) => {
+  return { shardId, count: await client.user.count() };
+});
+```
+
+### Health Monitoring
+
+```typescript
+// Get health of all shards
+const health = sharding.getHealth();
+// Returns: [{ shardId, isHealthy, latencyMs, lastChecked, ... }]
+
+// Get specific shard health
+const shard1Health = sharding.getHealthByShard('shard_1');
+```
+
+### Lifecycle
+
+```typescript
+// Graceful shutdown
+await sharding.disconnect();
+
+// Check connection status
+if (sharding.isConnected()) {
+  // ...
+}
+```
 
 ## CLI Tools
 
@@ -112,6 +223,35 @@ yarn test:shards
 | `healthCheckIntervalMs`   | `number`                        | `30000`    | Health check frequency            |
 | `circuitBreakerThreshold` | `number`                        | `3`        | Failures before marking unhealthy |
 
+### Shard Config
+
+```typescript
+interface ShardConfig {
+  id: string; // Unique identifier (e.g., 'shard_1')
+  url: string; // PostgreSQL connection string
+  weight?: number; // Optional weight for distribution
+  isReadReplica?: boolean;
+}
+```
+
+## Routing Strategies
+
+### Modulo (Default)
+
+Simple and fast. Uses `hash(key) % shardCount` for routing.
+
+```typescript
+strategy: 'modulo';
+```
+
+### Consistent Hash
+
+Minimizes data movement when adding/removing shards.
+
+```typescript
+strategy: 'consistent-hash';
+```
+
 ## Error Handling
 
 ```typescript
@@ -125,6 +265,61 @@ try {
   }
 }
 ```
+
+## Custom Logger
+
+```typescript
+const sharding = new PrismaSharding({
+  // ...config,
+  logger: {
+    info: (msg) => myLogger.info(msg),
+    warn: (msg) => myLogger.warn(msg),
+    error: (msg) => myLogger.error(msg),
+  },
+});
+```
+
+---
+
+### `getAllClients()`
+
+Get all Prisma client instances.
+
+```typescript
+const clients = sharding.getAllClients();
+
+console.log(`Managing ${clients.length} shard clients`);
+```
+
+**Returns:** `PrismaClient[]`
+
+---
+
+### `getShardCount()`
+
+Get total number of configured shards.
+
+```typescript
+const count = sharding.getShardCount();
+console.log(`Running on ${count} shards`);
+// Output: Running on 3 shards
+```
+
+---
+
+### `getShardIds()`
+
+Get array of all shard IDs.
+
+```typescript
+const shardIds = sharding.getShardIds();
+console.log(shardIds);
+// Output: ['shard_1', 'shard_2', 'shard_3']
+```
+
+**Returns:** `string[]`
+
+---
 
 ## Author
 
