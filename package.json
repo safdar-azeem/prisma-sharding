@@ -1,6 +1,6 @@
 {
   "name": "prisma-sharding",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Lightweight database sharding library for Prisma with connection pooling and health monitoring",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -14,8 +14,14 @@
     "database",
     "postgresql",
     "horizontal-scaling",
-    "connection-pool"
+    "connection-pool",
+    "cli"
   ],
+  "bin": {
+    "prisma-sharding-migrate": "./dist/cli/migrate.js",
+    "prisma-sharding-studio": "./dist/cli/studio.js",
+    "prisma-sharding-test": "./dist/cli/test.js"
+  },
   "files": [
     "dist"
   ],
@@ -27,7 +33,9 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean && tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts --format cjs --outDir dist/cli --clean",
+    "build:lib": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build:cli": "tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts --format cjs --outDir dist/cli",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
@@ -39,6 +47,9 @@
   },
   "peerDependencies": {
     "@prisma/client": ">=5.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
