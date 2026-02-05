@@ -1,7 +1,7 @@
-import type { RoutingStrategy, ShardingLogger } from '../types';
 import { hashString } from '../utils';
 import { RoutingError } from './errors';
 import { DEFAULTS } from '../constants';
+import type { RoutingStrategy, ShardingLogger } from '../types';
 
 interface RouterConfig {
   strategy: RoutingStrategy;
