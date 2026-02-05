@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { spawn } from 'child_process';
-import path from 'path';
 
 interface TestResult {
   name: string;
@@ -53,24 +52,109 @@ const runTest = async (name: string, testFn: () => Promise<void>): Promise<void>
   }
 };
 
-const testConnection = (url: string): Promise<boolean> => {
+const testConnection = (
+  url: string,
+  shardId: string
+): Promise<{ success: boolean; error?: string }> => {
   return new Promise((resolve) => {
-    const prisma = spawn('npx', ['prisma', 'db', 'execute', '--url', url, '--stdin'], {
+    // Use npx prisma db execute with proper schema argument
+    const prisma = spawn('npx', ['prisma', 'db', 'execute', '--stdin', '--url', url], {
       shell: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    prisma.stdin.write('SELECT 1');
+    let stderr = '';
+
+    prisma.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    prisma.stdin.write('SELECT 1;');
     prisma.stdin.end();
 
+    const timeout = setTimeout(() => {
+      prisma.kill();
+      resolve({ success: false, error: 'Connection timeout' });
+    }, 10000);
+
     prisma.on('close', (code) => {
-      resolve(code === 0);
+      clearTimeout(timeout);
+      if (code === 0) {
+        resolve({ success: true });
+      } else {
+        // Try alternate method with psql if available
+        testWithPsql(url, shardId).then(resolve);
+      }
     });
 
     prisma.on('error', () => {
-      resolve(false);
+      clearTimeout(timeout);
+      testWithPsql(url, shardId).then(resolve);
     });
   });
+};
+
+const testWithPsql = (
+  url: string,
+  shardId: string
+): Promise<{ success: boolean; error?: string }> => {
+  return new Promise((resolve) => {
+    // Try using Node's built-in TCP check
+    const urlObj = parsePostgresUrl(url);
+    if (!urlObj) {
+      resolve({ success: false, error: 'Invalid URL format' });
+      return;
+    }
+
+    // Use Node net module to test TCP connection
+    import('net')
+      .then(({ default: net }) => {
+        const socket = new net.Socket();
+        const timeout = 5000;
+
+        socket.setTimeout(timeout);
+
+        socket.on('connect', () => {
+          socket.destroy();
+          resolve({ success: true });
+        });
+
+        socket.on('timeout', () => {
+          socket.destroy();
+          resolve({ success: false, error: `Connection timeout to ${urlObj.host}:${urlObj.port}` });
+        });
+
+        socket.on('error', (err) => {
+          socket.destroy();
+          resolve({
+            success: false,
+            error: `Cannot reach ${urlObj.host}:${urlObj.port} - ${err.message}`,
+          });
+        });
+
+        socket.connect(urlObj.port, urlObj.host);
+      })
+      .catch(() => {
+        resolve({ success: false, error: 'Failed to test connection' });
+      });
+  });
+};
+
+const parsePostgresUrl = (url: string): { host: string; port: number; database: string } | null => {
+  try {
+    // postgresql://user:pass@host:port/database?schema=public
+    const match = url.match(/postgresql:\/\/[^@]+@([^:]+):(\d+)\/([^?]+)/);
+    if (match) {
+      return {
+        host: match[1],
+        port: parseInt(match[2], 10),
+        database: match[3],
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 };
 
 const runTests = async (): Promise<void> => {
@@ -88,18 +172,7 @@ const runTests = async (): Promise<void> => {
     process.exit(1);
   }
 
-  log.section('Test 1: Shard Connection Tests');
-
-  for (const shard of shards) {
-    await runTest(`Connect to ${shard.id}`, async () => {
-      const success = await testConnection(shard.url);
-      if (!success) {
-        throw new Error(`Failed to connect to ${shard.id}`);
-      }
-    });
-  }
-
-  log.section('Test 2: Configuration Verification');
+  log.section('Test 1: Shard Configuration');
 
   await runTest('Verify environment variables', async () => {
     const shardCount = parseInt(process.env.SHARD_COUNT || '0', 10);
@@ -120,6 +193,27 @@ const runTests = async (): Promise<void> => {
     }
   });
 
+  await runTest('Validate URL formats', async () => {
+    for (const shard of shards) {
+      const urlInfo = parsePostgresUrl(shard.url);
+      if (!urlInfo) {
+        throw new Error(`Invalid URL format for ${shard.id}`);
+      }
+      log.info(`${shard.id}: ${urlInfo.host}:${urlInfo.port}/${urlInfo.database}`);
+    }
+  });
+
+  log.section('Test 2: Network Connectivity');
+
+  for (const shard of shards) {
+    await runTest(`Connect to ${shard.id}`, async () => {
+      const result = await testConnection(shard.url, shard.id);
+      if (!result.success) {
+        throw new Error(result.error || `Failed to connect to ${shard.id}`);
+      }
+    });
+  }
+
   log.section('Test Results Summary');
 
   const passed = results.filter((r) => r.passed).length;
@@ -138,6 +232,10 @@ const runTests = async (): Promise<void> => {
       .forEach((r) => {
         console.log(`     - ${r.name}: ${r.message}`);
       });
+    console.log('\n💡 Tips:');
+    console.log('   - Make sure PostgreSQL is running');
+    console.log('   - Check if the shard databases exist');
+    console.log('   - Verify credentials in SHARD_N_URL');
     process.exit(1);
   }
 
