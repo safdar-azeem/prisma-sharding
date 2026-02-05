@@ -213,6 +213,52 @@ Test connections to all shards.
 yarn test:shards
 ```
 
+```
+================================
+📋 User Distribution Test
+================================
+Creating 24 test users across 3 shards...
+
+User 1/24: "testuser_0" → shard_3
+User 2/24: "testuser_1" → shard_1
+User 3/24: "testuser_2" → shard_2
+User 4/24: "testuser_3" → shard_3
+User 5/24: "testuser_4" → shard_1
+User 6/24: "testuser_5" → shard_2
+User 7/24: "testuser_6" → shard_3
+User 8/24: "testuser_7" → shard_1
+User 9/24: "testuser_8" → shard_2
+User 10/24: "testuser_9" → shard_3
+User 11/24: "testuser_10" → shard_2
+User 12/24: "testuser_11" → shard_1
+User 13/24: "testuser_12" → shard_3
+User 14/24: "testuser_13" → shard_2
+User 15/24: "testuser_14" → shard_1
+User 16/24: "testuser_15" → shard_3
+User 17/24: "testuser_16" → shard_2
+User 18/24: "testuser_17" → shard_1
+User 19/24: "testuser_18" → shard_3
+User 20/24: "testuser_19" → shard_2
+User 21/24: "testuser_20" → shard_1
+User 22/24: "testuser_21" → shard_3
+User 23/24: "testuser_22" → shard_2
+User 24/24: "testuser_23" → shard_1
+✅ Created 24/24 test users
+```
+
+```
+================================
+📋 Read Verification
+================================
+✓ User "test_user_1770289330292_0" found on shard_3
+✓ User "test_user_1770289330292_1" found on shard_1
+✓ User "test_user_1770289330292_2" found on shard_2
+✓ User "test_user_1770289330292_3" found on shard_3
+✓ User "test_user_1770289330292_4" found on shard_1
+Verified 5/5 users on correct shards
+✅ Verify users exist on correct shards (136ms)
+```
+
 ## Configuration
 
 | Option                    | Type                            | Default    | Description                       |
