@@ -6,7 +6,6 @@ import type {
   ShardingLogger,
   ClientFactory,
 } from '../types';
-import { DEFAULTS } from '../constants';
 import { ConnectionError } from './errors';
 
 interface ManagerConfig<TClient> {
