@@ -168,8 +168,8 @@ Add to your `package.json`:
 ```json
 {
   "scripts": {
-    "db:studio:all": "prisma-sharding-studio",
-    "migrate:shards": "prisma-sharding-migrate",
+    "db:update": "prisma-sharding-update",
+    "db:studio": "prisma-sharding-studio",
     "test:shards": "prisma-sharding-test"
   }
 }
@@ -188,12 +188,34 @@ SHARD_STUDIO_BASE_PORT=51212   # optional, for studio
 
 ### Commands
 
+#### `prisma-sharding-update` (Recommended)
+
+The "All-in-One" command. It generates Prisma Client types and migrates all shards.
+**Use this whenever you change `schema.prisma`.**
+
+1. Runs `prisma generate` (Updates TypeScript types)
+2. Runs `prisma db push` on all shards (Updates Databases)
+
+```bash
+yarn db:update
+
+```
+
+**With Flags:**
+You can pass flags like `--force-reset` if you need to wipe data due to schema conflicts.
+
+```bash
+yarn db:update --force-reset
+
+```
+
 #### `prisma-sharding-migrate`
 
-Push schema to all shards using `prisma db push`.
+Only pushes schema to all shards (skips type generation). Useful for production deployment pipelines.
 
 ```bash
 yarn migrate:shards
+
 ```
 
 #### `prisma-sharding-studio`
@@ -201,8 +223,9 @@ yarn migrate:shards
 Start Prisma Studio for all shards on sequential ports.
 
 ```bash
-yarn db:studio:all
+yarn db:studio
 # Opens shard_1 on :51212, shard_2 on :51213, etc.
+
 ```
 
 #### `prisma-sharding-test`
