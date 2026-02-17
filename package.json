@@ -20,6 +20,7 @@
   ],
   "bin": {
     "prisma-sharding-migrate": "./dist/cli/migrate.js",
+    "prisma-sharding-update": "./dist/cli/update.js",
     "prisma-sharding-studio": "./dist/cli/studio.js",
     "prisma-sharding-test": "./dist/cli/test.js"
   },
@@ -34,9 +35,9 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean && tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts --format cjs --outDir dist/cli --clean",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean && tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts --format cjs --outDir dist/cli --clean",
     "build:lib": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "build:cli": "tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts --format cjs --outDir dist/cli",
+    "build:cli": "tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts --format cjs --outDir dist/cli",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
