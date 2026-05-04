@@ -114,6 +114,10 @@ export class PrismaSharding<TClient> {
     return this.manager!.getClient(shardId);
   }
 
+  /**
+   * Returns both the random shard client and its shardId.
+   * Used when the shardId must be stored on the user record for future routing.
+   */
   getRandomShardWithInfo(): ShardResult<TClient> {
     this.ensureConnected();
     const shardId = this.router!.getRandomShardId();
