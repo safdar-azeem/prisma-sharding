@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import { getShardConfigs, NO_SHARDS_CONFIGURED_MESSAGE } from './utils/shards';
+import { INTERNAL_DEFAULTS } from '../constants/internal';
+import { sanitizeCommandOutput } from './utils/command';
+import { parsePostgresUrl, postgresEndpoint, PostgresUrlInfo } from './utils/postgres';
+import { getShardConfigResult, NO_SHARDS_CONFIGURED_MESSAGE } from './utils/shards';
 
 interface TestResult {
   name: string;
@@ -13,6 +16,12 @@ interface TestUser {
   id: string;
   email: string;
   shardId: string;
+}
+
+interface SqlStatement {
+  text: string;
+  values?: unknown[];
+  psqlText?: string;
 }
 
 const results: TestResult[] = [];
@@ -43,33 +52,12 @@ const runTest = async (name: string, testFn: () => Promise<void>): Promise<void>
   }
 };
 
-const parsePostgresUrl = (
-  url: string
-): { host: string; port: number; database: string; user: string; password: string } | null => {
-  try {
-    // postgresql://user:pass@host:port/database?schema=public
-    const match = url.match(/postgresql:\/\/([^:]+):([^@]+)@([^:]+):(\d+)\/([^?]+)/);
-    if (match) {
-      return {
-        user: match[1],
-        password: match[2],
-        host: match[3],
-        port: parseInt(match[4], 10),
-        database: match[5],
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-};
-
-const testTcpConnection = (host: string, port: number): Promise<boolean> => {
+const testTcpConnection = (urlInfo: PostgresUrlInfo): Promise<boolean> => {
   return new Promise((resolve) => {
     import('net')
       .then(({ default: net }) => {
         const socket = new net.Socket();
-        socket.setTimeout(5000);
+        socket.setTimeout(INTERNAL_DEFAULTS.CLI_TEST_TCP_TIMEOUT_MS);
         socket.on('connect', () => {
           socket.destroy();
           resolve(true);
@@ -82,7 +70,11 @@ const testTcpConnection = (host: string, port: number): Promise<boolean> => {
           socket.destroy();
           resolve(false);
         });
-        socket.connect(port, host);
+        if (urlInfo.socketPath) {
+          socket.connect(`${urlInfo.socketPath}/.s.PGSQL.${urlInfo.port}`);
+        } else {
+          socket.connect(urlInfo.port, urlInfo.host);
+        }
       })
       .catch(() => resolve(false));
   });
@@ -100,20 +92,24 @@ const getPgClient = async () => {
 
 const executeSql = async (
   url: string,
-  sql: string
+  statement: string | SqlStatement
 ): Promise<{ success: boolean; rows?: unknown[]; error?: string }> => {
   const Client = await getPgClient();
+  const normalized = typeof statement === 'string' ? { text: statement } : statement;
 
   if (!Client) {
     // Fallback to psql if pg is not available
-    return executeSqlWithPsql(url, sql);
+    if (normalized.values && !normalized.psqlText) {
+      return { success: false, error: 'Parameterized SQL has no safe psql fallback' };
+    }
+    return executeSqlWithPsql(url, normalized.psqlText ?? normalized.text);
   }
 
   const client = new Client({ connectionString: url });
 
   try {
     await client.connect();
-    const result = await client.query(sql);
+    const result = await client.query(normalized.text, normalized.values);
     await client.end();
     return { success: true, rows: result.rows };
   } catch (error) {
@@ -122,7 +118,11 @@ const executeSql = async (
     } catch {
       // Ignore cleanup errors so the original query failure is reported.
     }
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      error: sanitizeCommandOutput(message, { DATABASE_URL: url }),
+    };
   }
 };
 
@@ -133,7 +133,7 @@ const executeSqlWithPsql = (
   return new Promise((resolve) => {
     import('child_process').then(({ spawn }) => {
       const psql = spawn('psql', [url, '-c', sql], {
-        shell: true,
+        shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -146,16 +146,26 @@ const executeSqlWithPsql = (
       const timeout = setTimeout(() => {
         psql.kill();
         resolve({ success: false, error: 'Command timeout' });
-      }, 15000);
+      }, INTERNAL_DEFAULTS.CLI_TEST_COMMAND_TIMEOUT_MS);
+      timeout.unref?.();
 
       psql.on('close', (code) => {
         clearTimeout(timeout);
-        resolve({ success: code === 0, error: code !== 0 ? stderr : undefined });
+        resolve({
+          success: code === 0,
+          error:
+            code !== 0
+              ? sanitizeCommandOutput(stderr, { DATABASE_URL: url })
+              : undefined,
+        });
       });
 
       psql.on('error', (err) => {
         clearTimeout(timeout);
-        resolve({ success: false, error: err.message });
+        resolve({
+          success: false,
+          error: sanitizeCommandOutput(err.message, { DATABASE_URL: url }),
+        });
       });
     });
   });
@@ -176,7 +186,7 @@ const getShardIndex = (key: string, shardCount: number): number => {
 };
 
 const runTests = async (): Promise<void> => {
-  const shards = getShardConfigs();
+  const { shards, missingShardIds } = getShardConfigResult();
   const timestamp = Date.now();
   const testTableName = `_prisma_sharding_test_${timestamp}`;
 
@@ -188,6 +198,11 @@ const runTests = async (): Promise<void> => {
   console.log(`   • Routing Strategy: ${process.env.SHARD_ROUTING_STRATEGY || 'modulo'}`);
   console.log(`   • Test Users: ${TEST_USER_COUNT}`);
   console.log(`   • Test Table: ${testTableName}`);
+
+  if (missingShardIds.length > 0) {
+    console.error(`\n❌ Missing shard URLs: ${missingShardIds.join(', ')}`);
+    process.exit(1);
+  }
 
   if (shards.length === 0) {
     console.error(`\n❌ ${NO_SHARDS_CONFIGURED_MESSAGE}`);
@@ -222,7 +237,7 @@ const runTests = async (): Promise<void> => {
       if (!urlInfo) {
         throw new Error(`Invalid URL format for ${shard.id}`);
       }
-      log.detail(`${shard.id} → ${urlInfo.host}:${urlInfo.port}/${urlInfo.database}`);
+      log.detail(`${shard.id} → ${postgresEndpoint(urlInfo)}/${urlInfo.database}`);
     }
   });
 
@@ -236,11 +251,11 @@ const runTests = async (): Promise<void> => {
       const urlInfo = parsePostgresUrl(shard.url);
       if (!urlInfo) throw new Error('Invalid URL');
 
-      const connected = await testTcpConnection(urlInfo.host, urlInfo.port);
+      const connected = await testTcpConnection(urlInfo);
       if (!connected) {
-        throw new Error(`Cannot reach ${urlInfo.host}:${urlInfo.port}`);
+        throw new Error(`Cannot reach ${postgresEndpoint(urlInfo)}`);
       }
-      log.detail(`${urlInfo.host}:${urlInfo.port} is reachable`);
+      log.detail(`${postgresEndpoint(urlInfo)} is reachable`);
     });
   }
 
@@ -302,10 +317,19 @@ const runTests = async (): Promise<void> => {
     const shardIndex = getShardIndex(userId, shards.length);
     const targetShard = shards[shardIndex];
 
-    const insertSql = `
-      INSERT INTO "${testTableName}" (id, email, username)
-      VALUES ('${userId}', '${email}', '${username}');
-    `;
+    const controlledValue = (value: string): string => {
+      if (!/^[A-Za-z0-9_@.-]+$/.test(value)) {
+        throw new Error('Generated test value contains unsupported characters');
+      }
+      return `'${value}'`;
+    };
+    const insertSql: SqlStatement = {
+      text: `INSERT INTO "${testTableName}" (id, email, username) VALUES ($1, $2, $3);`,
+      values: [userId, email, username],
+      psqlText:
+        `INSERT INTO "${testTableName}" (id, email, username) VALUES (` +
+        `${controlledValue(userId)}, ${controlledValue(email)}, ${controlledValue(username)});`,
+    };
 
     const result = await executeSql(targetShard.url, insertSql);
     if (result.success) {
@@ -378,7 +402,14 @@ const runTests = async (): Promise<void> => {
       const shard = shards.find((s) => s.id === user.shardId);
       if (!shard) continue;
 
-      const selectSql = `SELECT id, email FROM "${testTableName}" WHERE id = '${user.id}';`;
+      if (!/^[A-Za-z0-9_@.-]+$/.test(user.id)) {
+        throw new Error('Generated test ID contains unsupported characters');
+      }
+      const selectSql: SqlStatement = {
+        text: `SELECT id, email FROM "${testTableName}" WHERE id = $1;`,
+        values: [user.id],
+        psqlText: `SELECT id, email FROM "${testTableName}" WHERE id = '${user.id}';`,
+      };
       const result = await executeSql(shard.url, selectSql);
 
       if (result.success && result.rows && result.rows.length > 0) {
