@@ -1,3 +1,5 @@
+import { parseBooleanEnv } from './env';
+
 export function hashString(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -13,8 +15,14 @@ export function validateUrl(url: string): boolean {
 }
 
 export function createDefaultLogger() {
+  const verbose = parseBooleanEnv('PRISMA_SHARDING_VERBOSE', false);
+
   return {
-    info: (msg: string) => console.log(`[PrismaSharding] ${msg}`),
+    info: (msg: string) => {
+      if (verbose) {
+        console.log(`[PrismaSharding] ${msg}`);
+      }
+    },
     warn: (msg: string) => console.warn(`[PrismaSharding] ${msg}`),
     error: (msg: string) => console.error(`[PrismaSharding] ${msg}`),
   };
