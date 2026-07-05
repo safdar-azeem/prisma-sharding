@@ -184,6 +184,12 @@ SHARD_2_URL=postgresql://user:pass@host:5432/db2
 SHARD_3_URL=postgresql://user:pass@host:5432/db3
 SHARD_ROUTING_STRATEGY=modulo  # or consistent-hash
 SHARD_STUDIO_BASE_PORT=51212   # optional, for studio
+SHARD_STUDIO_REUSE_EXISTING=true # optional, defaults to true
+SHARD_STUDIO_STRICT_PORT_CHECK=false # optional, defaults to false
+SHARD_STUDIO_START_TIMEOUT_MS=15000 # optional, defaults to 15000
+SHARD_STUDIO_VERBOSE=false # optional, defaults to false
+SHARD_CLI_VERBOSE=false # optional, verbose update/migrate output
+PRISMA_SHARDING_VERBOSE=false # optional, library lifecycle logs
 ```
 
 ### Commands
@@ -200,6 +206,23 @@ The "All-in-One" command. It generates Prisma Client types and migrates all shar
 yarn db:update
 
 ```
+
+Default output stays compact:
+
+```text
+🔄 Prisma Sharding Update
+
+✅ client  Generated
+✅ shard_1  Synced
+✅ shard_2  Synced
+✅ shard_3  Synced
+```
+
+Interactive terminals show a single inline loader while Prisma Client generation and each shard
+sync are running. The loader is replaced by the completed row and is disabled for piped or CI logs.
+
+Set `SHARD_CLI_VERBOSE=true` or `SHARD_UPDATE_VERBOSE=true` to include Prisma command
+output, masked database URLs, and detailed diagnostics.
 
 **With Flags:**
 You can pass flags like `--force-reset` if you need to wipe data due to schema conflicts.
@@ -218,14 +241,89 @@ yarn migrate:shards
 
 ```
 
+This command uses the same compact shard rows as `db:update`. Set
+`SHARD_CLI_VERBOSE=true` or `SHARD_MIGRATE_VERBOSE=true` for Prisma command output.
+
 #### `prisma-sharding-studio`
 
 Start Prisma Studio for all shards on sequential ports.
 
 ```bash
 yarn db:studio
-# Opens shard_1 on :51212, shard_2 on :51213, etc.
+```
 
+By default, ports are assigned from `SHARD_STUDIO_BASE_PORT`:
+
+```text
+shard_1 -> http://localhost:51212
+shard_2 -> http://localhost:51213
+shard_3 -> http://localhost:51214
+```
+
+Set `SHARD_STUDIO_BASE_PORT` to move the whole range:
+
+```bash
+SHARD_STUDIO_BASE_PORT=52000 yarn db:studio
+# shard_1 -> :52000, shard_2 -> :52001, etc.
+```
+
+Studio startup is safe to run from multiple local APIs. Before starting a shard Studio,
+the CLI checks whether the target port is already active. If it finds an existing Prisma
+Studio on that port, it reuses it instead of spawning another process:
+
+```text
+🗄️ Prisma Sharding Studio
+
+♻️ shard_1  http://localhost:51212
+♻️ shard_2  http://localhost:51213
+♻️ shard_3  http://localhost:51214
+```
+
+If a port is occupied by another process that does not look like Prisma Studio, the shard
+is marked with a warning and the CLI continues with the remaining shards. It will not kill,
+restart, or claim ownership of processes it did not start.
+
+Default output is intentionally compact:
+
+```text
+🗄️ Prisma Sharding Studio
+
+✅ shard_1  http://localhost:51212
+✅ shard_2  http://localhost:51213
+✅ shard_3  http://localhost:51214
+```
+
+Run with `SHARD_STUDIO_VERBOSE=true` to print port checks, masked database URLs, Prisma
+Studio child-process output, startup timings, and detailed failure diagnostics.
+
+Useful Studio environment variables:
+
+- `SHARD_STUDIO_BASE_PORT`: first port in the shard Studio range. Defaults to `51212`.
+- `SHARD_STUDIO_REUSE_EXISTING`: reuse already-running Prisma Studio ports. Defaults to `true`.
+- `SHARD_STUDIO_STRICT_PORT_CHECK`: when `true`, any failed shard makes the command exit
+  non-zero after stopping Studio processes started by that run. Defaults to `false`.
+- `SHARD_STUDIO_START_TIMEOUT_MS`: maximum time to wait for a newly spawned Studio to become
+  reachable. Defaults to `15000`.
+- `SHARD_STUDIO_STABILITY_MS`: short window a newly-ready Studio process must survive before
+  it is reported as started. Defaults to `500`.
+- `SHARD_STUDIO_SHUTDOWN_TIMEOUT_MS`: time to wait for owned Studio processes to close during
+  shutdown before sending a force-stop signal. Defaults to `5000`.
+- `SHARD_STUDIO_VERBOSE`: print detailed Studio startup diagnostics. Defaults to `false`.
+- `SHARD_STUDIO_DEBUG`: alias for `SHARD_STUDIO_VERBOSE`.
+
+When multiple APIs use the same shard configuration locally, the first API starts the Studio
+processes and later APIs reuse the existing Studio ports. Reused-only commands stay quietly
+attached, preventing process supervisors from printing a normal child-exit message. Pressing
+Ctrl+C only stops Studio processes started by the current CLI run; reused processes are left running.
+
+If you run Studio beside `nodemon`, prefer an explicit watch scope for the API process. Prisma
+Studio does not need to write to your app source, but broad nodemon defaults can restart on
+generated TypeScript or JSON files produced by other dev tooling:
+
+```bash
+nodemon --watch src --ext ts,json \
+  --ignore 'src/types/*.generated.ts' \
+  --exec tsx --env-file=.env --no-warnings src/server.ts
 ```
 
 #### `prisma-sharding-test`
@@ -336,6 +434,9 @@ try {
 ```
 
 ## Custom Logger
+
+The default logger prints warnings and errors only. Set `PRISMA_SHARDING_VERBOSE=true` to include
+initialization, shard connection, and shutdown lifecycle messages.
 
 ```typescript
 const sharding = new PrismaSharding({
