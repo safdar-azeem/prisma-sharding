@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import 'dotenv/config';
+import { getShardConfigs, NO_SHARDS_CONFIGURED_MESSAGE } from './utils/shards';
 
 interface TestResult {
   name: string;
@@ -25,24 +26,6 @@ const log = {
   warn: (msg: string) => console.log(`⚠️  ${msg}`),
   section: (msg: string) => console.log(`\n${'='.repeat(60)}\n📋 ${msg}\n${'='.repeat(60)}`),
   detail: (msg: string) => console.log(`   ${msg}`),
-};
-
-const getShardConfigs = (): Array<{ id: string; url: string }> => {
-  const shards: Array<{ id: string; url: string }> = [];
-  const shardCount = parseInt(process.env.SHARD_COUNT || '0', 10);
-
-  for (let i = 1; i <= shardCount; i++) {
-    const url = process.env[`SHARD_${i}_URL`];
-    if (url) {
-      shards.push({ id: `shard_${i}`, url });
-    }
-  }
-
-  if (shards.length === 0 && process.env.DATABASE_URL) {
-    shards.push({ id: 'shard_1', url: process.env.DATABASE_URL });
-  }
-
-  return shards;
 };
 
 const runTest = async (name: string, testFn: () => Promise<void>): Promise<void> => {
@@ -136,7 +119,9 @@ const executeSql = async (
   } catch (error) {
     try {
       await client.end();
-    } catch {}
+    } catch {
+      // Ignore cleanup errors so the original query failure is reported.
+    }
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 };
@@ -152,12 +137,8 @@ const executeSqlWithPsql = (
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      let stdout = '';
       let stderr = '';
 
-      psql.stdout?.on('data', (data) => {
-        stdout += data.toString();
-      });
       psql.stderr?.on('data', (data) => {
         stderr += data.toString();
       });
@@ -209,9 +190,7 @@ const runTests = async (): Promise<void> => {
   console.log(`   • Test Table: ${testTableName}`);
 
   if (shards.length === 0) {
-    console.error(
-      '\n❌ No shards configured. Set SHARD_COUNT and SHARD_N_URL environment variables.'
-    );
+    console.error(`\n❌ ${NO_SHARDS_CONFIGURED_MESSAGE}`);
     process.exit(1);
   }
 
