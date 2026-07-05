@@ -4,14 +4,19 @@ import { isVerboseEnv } from '../utils/env';
 import { runPrismaCommand } from './utils/command';
 import { createCliLoader, printCliHeader, printCliRow, printVerboseHint } from './utils/output';
 import { syncShardSchemas } from './utils/prisma';
-import { getShardConfigs, NO_SHARDS_CONFIGURED_MESSAGE } from './utils/shards';
+import { getShardConfigResult, NO_SHARDS_CONFIGURED_MESSAGE } from './utils/shards';
 
 const updateAll = async (): Promise<void> => {
   const verbose = isVerboseEnv(['SHARD_UPDATE_VERBOSE', 'SHARD_CLI_VERBOSE']);
-  const shards = getShardConfigs();
+  const { shards, missingShardIds } = getShardConfigResult();
   const extraArgs = process.argv.slice(2);
 
   printCliHeader('🔄', 'Prisma Sharding Update');
+
+  if (missingShardIds.length > 0) {
+    printCliRow('❌', 'config', `Missing shard URLs: ${missingShardIds.join(', ')}`);
+    process.exit(1);
+  }
 
   if (shards.length === 0) {
     printCliRow('❌', 'config', NO_SHARDS_CONFIGURED_MESSAGE);
