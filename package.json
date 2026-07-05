@@ -35,9 +35,9 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean && tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts --format cjs --outDir dist/cli --clean",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean && tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts src/cli/utils/command.ts src/cli/utils/postgres.ts --format cjs --outDir dist/cli --clean",
     "build:lib": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "build:cli": "tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts --format cjs --outDir dist/cli",
+    "build:cli": "tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts src/cli/utils/command.ts src/cli/utils/postgres.ts --format cjs --outDir dist/cli",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "test": "yarn build && node --test test/*.test.js",
