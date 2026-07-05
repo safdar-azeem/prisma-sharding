@@ -1,11 +1,7 @@
 import { ChildProcess } from 'child_process';
 
 export const isChildProcessRunning = (childProcess: ChildProcess): boolean => {
-  return (
-    childProcess.exitCode === null &&
-    childProcess.signalCode === null &&
-    !childProcess.killed
-  );
+  return childProcess.exitCode === null && childProcess.signalCode === null;
 };
 
 export interface TerminateChildProcessOptions {
