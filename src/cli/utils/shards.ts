@@ -1,3 +1,5 @@
+import { maskDatabaseUrl } from '../../utils/sanitize';
+
 export interface ShardConfig {
   id: string;
   index: number;
@@ -39,14 +41,4 @@ export const getShardConfigs = (env: NodeJS.ProcessEnv = process.env): ShardConf
   return getShardConfigResult(env).shards;
 };
 
-export const maskShardUrl = (url: string): string => {
-  try {
-    const parsed = new URL(url);
-    if (parsed.password) {
-      parsed.password = '***';
-    }
-    return parsed.toString();
-  } catch {
-    return url.replace(/:[^:@]+@/, ':***@');
-  }
-};
+export const maskShardUrl = maskDatabaseUrl;
