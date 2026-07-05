@@ -40,6 +40,7 @@
     "build:cli": "tsup src/cli/migrate.ts src/cli/studio.ts src/cli/test.ts src/cli/update.ts --format cjs --outDir dist/cli",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
+    "test": "yarn build && node --test test/*.test.js",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "yarn build",
     "patch": "yarn version --patch && yarn publish",
