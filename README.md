@@ -2,13 +2,6 @@
 
 Lightweight database sharding library for Prisma with connection pooling, health monitoring, and CLI tools.
 
-## Backward Compatibility Policy
-
-This package treats its existing public API as stable. Production-hardening releases do not rename
-commands or public methods, change return shapes, move the package import path, remove exported
-errors, or add required fields to public outputs. Internal routing, execution, health, and CLI
-safety fixes preserve existing application code and the compact default CLI format.
-
 ## Installation
 
 ```bash
