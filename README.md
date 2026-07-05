@@ -2,6 +2,13 @@
 
 Lightweight database sharding library for Prisma with connection pooling, health monitoring, and CLI tools.
 
+## Backward Compatibility Policy
+
+This package treats its existing public API as stable. Production-hardening releases do not rename
+commands or public methods, change return shapes, move the package import path, remove exported
+errors, or add required fields to public outputs. Internal routing, execution, health, and CLI
+safety fixes preserve existing application code and the compact default CLI format.
+
 ## Installation
 
 ```bash
@@ -38,76 +45,77 @@ await sharding.connect();
 
 ## API
 
-| Method                       | Description                                   |
-| ---------------------------- | --------------------------------------------- |
-| `getShard(key)`              | Get Prisma client for a given key             |
-| `getShardById(shardId)`      | Get Prisma client by shard ID                 |
-| `getRandomShard()`           | Get random shard (for new records)            |
-| `findFirst(fn)`              | Search across all shards, return first result |
-| `runOnAll(fn)`               | Execute on all shards                         |
-| `getHealth()`                | Get health status of all shards               |
-| `connect()` / `disconnect()` | Lifecycle methods                             |
+| Method                       | Description                                    |
+| ---------------------------- | ---------------------------------------------- |
+| `getShard(key)`              | Deterministic client for a routing key         |
+| `getShardById(shardId)`      | Client for a persisted shard owner             |
+| `getRandomShard()`           | Random assignment; ownership must be recorded  |
+| `findFirst(fn)`              | Bounded exception-path search across shards    |
+| `runOnAll(fn)`               | Bounded admin/analytics execution              |
+| `getHealth()`                | Health status using the existing output shape  |
+| `connect()` / `disconnect()` | Lifecycle methods                              |
 
-### Step 2: Create a User (Assign to a Shard)
+## Shard Ownership
 
-New records should be created on a random shard for even distribution.
+Every record needs one authoritative shard owner. Choose one of these patterns and use it
+consistently. Cross-shard search is a recovery path, not an ownership strategy.
 
-```ts
+### Pattern A: Deterministic Ownership
+
+Generate or obtain the routing key before inserting the record, then use the same key for every
+future operation:
+
+```typescript
 import { sharding } from '@/config/prisma';
 
-const client = sharding.getRandomShard();
-
-const user = await client.user.create({
-  data: {
-    email: 'user@example.com',
-    username: 'new_user',
-  },
-});
-```
-
-## Step 3: Access User by ID (Shard Routing)
-
-When you have a user ID, Prisma Sharding routes you to the correct shard automatically.
-
-```ts
-const userId = 'abc123';
-
+const userId = crypto.randomUUID();
 const client = sharding.getShard(userId);
+const user = await client.user.create({
+  data: { id: userId, email: 'user@example.com', username: 'new_user' },
+});
 
-const user = await client.user.findUnique({
+const sameUser = await sharding.getShard(userId).user.findUnique({
   where: { id: userId },
 });
 ```
 
-`Important rule:`
+Modulo routing uses the existing `hashString(key) % shardCount` placement. The hash function and
+configured shard order are data-placement contracts: changing either can move existing records and
+requires an explicit migration or dual-read plan. Consistent hashing also preserves configured
+shard IDs and supports custom IDs such as `tenant-east`.
 
-Once you get the shard client using a user ID, **all future operations for that user must use this same client**.
+### Pattern B: Assigned Ownership
 
-That includes:
-
-- Reading user data
-- Updating user data
-- Creating related records (profiles, posts, settings, etc)
-
-Every user belongs to exactly one shard. Their entire data lives on that shard only.
-
-Do **not** switch shards or use a random shard for user related actions.
-
-Always do this:
-
-```ts
-const client = sharding.getShard(userId);
-```
-
-This guarantees all user data stays on the correct shard and avoids cross shard bugs.
-
-### Step 4: Find User Without ID (Cross Shard Search)
-
-If you do not have the user ID, search all shards in parallel.
-Use this only when necessary.
+Random assignment can distribute new records, but the application must persist the assigned shard
+ID in a directory table, tenant registry, or equivalent ownership metadata:
 
 ```typescript
-// Find user by email across ALL shards (parallel execution)
+const { client, shardId } = sharding.getRandomShardWithInfo();
+const user = await client.user.create({ data: { email, username } });
+
+await shardDirectory.create({ data: { recordId: user.id, shardId } });
+
+const ownership = await shardDirectory.findUniqueOrThrow({
+  where: { recordId: user.id },
+});
+const sameUser = await sharding
+  .getShardById(ownership.shardId)
+  .user.findUnique({ where: { id: user.id } });
+```
+
+The existing `getRandomShard()` method still returns only a client. Calling it for a write and
+later calling `getShard(record.id)` is **not guaranteed to select the same shard**. If you use
+`getRandomShard()`, your application needs another reliable way to record which shard was selected.
+`weight` affects random assignment only; it never changes deterministic `getShard(key)` placement.
+
+### Find Without Ownership Metadata
+
+`findFirst()` is bounded, timed, health-aware, and returns when the first non-null result arrives.
+Even so, one call can create work on multiple databases. Treat it as an exception, recovery, or
+administrative path. At high traffic it should not be the normal login, email lookup, user lookup,
+or tenant lookup path; maintain shard ownership metadata instead.
+
+```typescript
 const { result: user, client } = await sharding.findFirst(async (c) =>
   c.user.findFirst({ where: { email } })
 );
@@ -121,10 +129,10 @@ if (user && client) {
 }
 ```
 
-## Step 5: Run on All Shards (Admin or Analytics)
+### Run on All Shards
 
 ```typescript
-// Get counts from all shards
+// Appropriate for bounded admin or analytics work, not a normal request path.
 const counts = await sharding.runOnAll(async (client) => client.user.count());
 const totalUsers = counts.reduce((sum, count) => sum + count, 0);
 
@@ -135,6 +143,13 @@ const results = await sharding.runOnAllWithDetails(async (client, shardId) => {
 ```
 
 ### Health Monitoring
+
+`connect()` initializes all clients and starts background warmup for clients that implement
+`$connect()`, followed by an initial `SELECT 1` when `$queryRaw` is available. Warmup does not delay
+client availability, preserving existing startup behavior. Periodic checks have a deadline, cannot
+overlap, and update the existing `ShardHealth` shape. Deterministic routing still returns the
+record's owner when it is marked unhealthy; cross-shard work schedules healthy, lower-latency
+shards first.
 
 ```typescript
 // Get health of all shards
@@ -169,6 +184,7 @@ Add to your `package.json`:
 {
   "scripts": {
     "db:update": "prisma-sharding-update",
+    "migrate:shards": "prisma-sharding-migrate",
     "db:studio": "prisma-sharding-studio",
     "test:shards": "prisma-sharding-test"
   }
@@ -196,11 +212,12 @@ PRISMA_SHARDING_VERBOSE=false # optional, library lifecycle logs
 
 #### `prisma-sharding-update` (Recommended)
 
-The "All-in-One" command. It generates Prisma Client types and migrates all shards.
-**Use this whenever you change `schema.prisma`.**
+The "All-in-One" development command generates Prisma Client types and synchronizes local/dev
+shards. Use this whenever you change `schema.prisma` during development. It is not a production
+migration workflow.
 
 1. Runs `prisma generate` (Updates TypeScript types)
-2. Runs `prisma db push` on all shards (Updates Databases)
+2. Runs `prisma db push` on all shards (Synchronizes development databases)
 
 ```bash
 yarn db:update
@@ -224,25 +241,33 @@ sync are running. The loader is replaced by the completed row and is disabled fo
 Set `SHARD_CLI_VERBOSE=true` or `SHARD_UPDATE_VERBOSE=true` to include Prisma command
 output, masked database URLs, and detailed diagnostics.
 
-**With Flags:**
-You can pass flags like `--force-reset` if you need to wipe data due to schema conflicts.
+Existing flags remain unchanged and are forwarded as provided. For example:
 
 ```bash
 yarn db:update --force-reset
 
 ```
 
+The command does not inject `--accept-data-loss` automatically.
+
 #### `prisma-sharding-migrate`
 
-Only pushes schema to all shards (skips type generation). Useful for production deployment pipelines.
+This is the production/staging path. For each shard it checks migration status and runs
+`prisma migrate deploy`, applying committed migration artifacts without generating the client,
+resetting the database, or using `db push`.
 
 ```bash
 yarn migrate:shards
 
 ```
 
+Any failed shard makes the command exit non-zero and remains visible in the compact results.
 This command uses the same compact shard rows as `db:update`. Set
 `SHARD_CLI_VERBOSE=true` or `SHARD_MIGRATE_VERBOSE=true` for Prisma command output.
+
+Do not use `prisma db push` as a production migration strategy. Commit and review the Prisma
+migration directory, then run `prisma-sharding-migrate` during deployment. Verbose mode includes
+sanitized status/deploy commands, masked database URLs, exit codes, shard IDs, and next-step hints.
 
 #### `prisma-sharding-studio`
 
@@ -387,7 +412,7 @@ Verified 5/5 users on correct shards
 | `shards`                  | `ShardConfig[]`                 | Required   | Array of shard configurations     |
 | `strategy`                | `'modulo' \| 'consistent-hash'` | `'modulo'` | Routing algorithm                 |
 | `createClient`            | `(url, shardId) => TClient`     | Required   | Factory to create Prisma clients  |
-| `healthCheckIntervalMs`   | `number`                        | `30000`    | Health check frequency            |
+| `healthCheckIntervalMs`   | `number`                        | `30000`    | Positive health check frequency   |
 | `circuitBreakerThreshold` | `number`                        | `3`        | Failures before marking unhealthy |
 
 ### Shard Config
@@ -396,7 +421,7 @@ Verified 5/5 users on correct shards
 interface ShardConfig {
   id: string; // Unique identifier (e.g., 'shard_1')
   url: string; // PostgreSQL connection string
-  weight?: number; // Optional weight for distribution
+  weight?: number; // Positive random-assignment weight only
   isReadReplica?: boolean;
 }
 ```
@@ -413,11 +438,63 @@ strategy: 'modulo';
 
 ### Consistent Hash
 
-Minimizes data movement when adding/removing shards.
+Uses a precomputed virtual-node ring and binary search. Custom and non-sequential shard IDs are
+supported. Adding or removing shards still changes ownership for part of the keyspace, so plan data
+movement before changing a production shard list.
 
 ```typescript
 strategy: 'consistent-hash';
 ```
+
+## Architecture and Scaling
+
+The public `PrismaSharding` layer validates and delegates without changing its established surface.
+Internally, the router owns key placement, the manager owns clients and health state, and one
+cross-shard executor owns concurrency, deadlines, health-aware scheduling, stable result ordering,
+and failure isolation. CLI commands share one shard parser and one sanitized child-process runner.
+
+| Layer | Responsibility |
+| --- | --- |
+| Public API | Validate, delegate, and preserve existing result shapes |
+| Router | Stable deterministic placement and weighted random assignment |
+| Shard manager | Client lifecycle, initial verification, health, and shutdown |
+| Cross-shard executor | Shared concurrency, deadlines, ordering, and failure isolation |
+| CLI | Safe migration/update/test/Studio orchestration with compact output |
+
+Low-level execution behavior is intentionally internal: fan-out concurrency and deadlines are
+central defaults, the hash function is unchanged, health checks use typed Prisma-like capability
+guards, successful `runOnAll()` results retain configured shard order, and errors stay isolated in
+the existing detailed result shape.
+
+Normal request flow should be:
+
+```text
+routing key or directory lookup -> one shard -> one Prisma operation
+```
+
+`findFirst()` and `runOnAll()` use bounded concurrency and per-shard deadlines, but they still
+multiply database work and tail-latency exposure. Reserve them for recovery, administration, and
+analytics. Pending Prisma queries may not be cancellable after an early `findFirst()` result, so
+the caller can resolve before all already-started database work has physically stopped.
+
+The executor deadline limits how long the package waits; it does **not** cancel the underlying
+Prisma or PostgreSQL query. Configure a database-level deadline as well, such as PostgreSQL
+`statement_timeout` or the equivalent adapter/provider query timeout, so timed-out work cannot
+continue consuming database resources indefinitely.
+
+### Connection Pool Budgeting
+
+Each shard client owns or uses a connection pool. Budget the fleet-wide maximum as:
+
+```text
+application instances × shards per instance × connections per shard pool
+```
+
+For example, 20 application instances × 8 shards × 10 connections can attempt 1,600 database
+connections. Set the adapter's pool limit and connection timeout deliberately per application
+instance and per shard. At larger fleet sizes, use PgBouncer or provider-managed pooling and verify
+that the database's total connection budget includes migrations, administration, and failover
+headroom. The sharding package does not create hidden extra Prisma clients.
 
 ## Error Handling
 
