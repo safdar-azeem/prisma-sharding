@@ -68,6 +68,9 @@ const runShardCommands = async ({
       loader.succeed('Synced');
     } else {
       loader.fail('Failed');
+      if (!verbose && result.error) {
+        console.error(result.error);
+      }
     }
   }
 
@@ -106,6 +109,9 @@ export const deployShardMigrations = async (
     if (!status.success) {
       results.push({ shardId: shard.id, success: false });
       loader.fail('Failed');
+      if (!verbose && status.error) {
+        console.error(status.error);
+      }
       continue;
     }
 
@@ -120,6 +126,9 @@ export const deployShardMigrations = async (
       loader.succeed('Synced');
     } else {
       loader.fail('Failed');
+      if (!verbose && deploy.error) {
+        console.error(deploy.error);
+      }
     }
   }
 
