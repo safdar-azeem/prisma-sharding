@@ -1,6 +1,6 @@
 {
   "name": "prisma-sharding",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Lightweight database sharding library for Prisma with connection pooling and health monitoring",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
