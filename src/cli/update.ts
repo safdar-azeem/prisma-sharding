@@ -40,6 +40,9 @@ const updateAll = async (): Promise<void> => {
 
   if (!generateResult.success) {
     generateLoader.fail('Generation failed');
+    if (!verbose && generateResult.error) {
+      console.error(generateResult.error);
+    }
     if (!verbose) {
       printVerboseHint();
     }
