@@ -245,28 +245,27 @@ pipeline:
    semantically equivalent object differently (index operator classes, for example),
    drift is a **concise grouped warning by default and never blocks startup**; set
    `SHARD_STRICT_DRIFT=true` (CI/production) to make drift and unverifiable schemas fail.
-8. Prints **one final line per database** and one outcome line, and exits non-zero if
-   any database failed.
+8. Prints **one quiet `Synced` line per active database** (detailed statuses and the
+   Complete summary appear only in verbose mode), and exits non-zero if any database
+   failed.
 
 ```bash
 yarn db:update
 ```
 
 ```text
-🔄 Prisma Sharding Update
-
-✅ client  Generated
-✅ shard_1  1 migration applied
-✅ shard_2  Already up to date
-✅ shard_3  Already up to date
-
-✅ Complete  All 3 databases are up to date
+✅ client   Generated
+✅ shard_1  Synced
+✅ shard_2  Synced
+✅ shard_3  Synced
 ```
+
+Skipped placeholder databases, migration counts, drift warnings, and other diagnostics stay quiet unless `SHARD_CLI_VERBOSE=true` (or `SHARD_UPDATE_VERBOSE=true`) is set.
 
 A failed migration always fails the run, names the migration, and shows Prisma's real error:
 
 ```text
-✅ shard_1  Already up to date
+✅ shard_1  Synced
 ❌ shard_2  20260724000200_pmp_task_ticket_number failed
 ⏭️ shard_3  Not attempted
 
@@ -409,11 +408,10 @@ yarn db:studio
 ```
 
 ```text
-🗄️ Prisma Sharding Studio
-
-✅ Studio  http://localhost:51212
-   3 databases available. Switch between them inside Studio.
+📦 Studio  http://localhost:51212
 ```
+
+Database counts, reuse details, and startup diagnostics appear only with `SHARD_STUDIO_VERBOSE=true`.
 
 One command, one URL, one browser tab. The database picker sits in the Studio header;
 every table view, filter, edit, SQL statement, transaction and refresh runs against the
