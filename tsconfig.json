@@ -3,7 +3,8 @@
     "target": "ES2020",
     "module": "ESNext",
     "lib": [
-      "ES2020"
+      "ES2020",
+      "ES2021.Promise"
     ],
     "declaration": true,
     "declarationMap": true,
@@ -30,6 +31,7 @@
   "exclude": [
     "node_modules",
     "dist",
-    "**/*.test.ts"
+    "**/*.test.ts",
+    "src/studio-host/shell/**"
   ]
 }
