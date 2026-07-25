@@ -6,7 +6,7 @@
  * `prisma-sharding-studio` fast and offline: starting Studio serves static
  * files and never invokes a bundler.
  *
- * React, `@prisma/studio-core` and the shell are bundled together so the
+ * React, `@prisma-sharding/studio` and the shell are bundled together so the
  * published package has no browser-side runtime resolution to do, and so a
  * consuming project's own React version can never conflict with Studio's.
  */
