@@ -38,7 +38,9 @@ export const runUpdateCli = async (options: UpdateCliOptions): Promise<number> =
   const verbose = isVerboseEnv(verboseEnvNames, env);
   const { targets, missingShardIds, duplicates } = getDatabaseTargets(env);
 
-  printCliHeader(icon, title);
+  if (verbose) {
+    printCliHeader(icon, title);
+  }
 
   if (missingShardIds.length > 0) {
     printCliRow('❌', 'config', `Missing shard URLs: ${missingShardIds.join(', ')}`);
