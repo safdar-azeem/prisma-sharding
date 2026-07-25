@@ -1,5 +1,6 @@
 import { INTERNAL_DEFAULTS } from '../../constants/internal';
 import { isVerboseEnv, parseBooleanEnv, parsePositiveIntegerEnv } from '../../utils/env';
+import { getStudioRegistryDirectory } from './studio-registry';
 
 export interface StudioOptions {
   basePort: number;
@@ -9,9 +10,16 @@ export interface StudioOptions {
   shutdownTimeoutMs: number;
   strictPortCheck: boolean;
   verbose: boolean;
+  registryDirectory: string;
+  portScanLimit: number;
 }
 
 export const getStudioOptions = (): StudioOptions => ({
+  registryDirectory: getStudioRegistryDirectory(),
+  portScanLimit: parsePositiveIntegerEnv(
+    'SHARD_STUDIO_PORT_SCAN_LIMIT',
+    INTERNAL_DEFAULTS.STUDIO_PORT_SCAN_LIMIT
+  ),
   basePort: parsePositiveIntegerEnv(
     'SHARD_STUDIO_BASE_PORT',
     INTERNAL_DEFAULTS.STUDIO_BASE_PORT
