@@ -257,6 +257,87 @@ test('no pending migrations reports every database as up to date without deployi
   }
 });
 
+test('normal update output stays quiet: Synced only, skipped primary hidden', async () => {
+  const project = createProject([TICKET_MIGRATION]);
+  const urls = {
+    'postgresql://u:p@localhost/missing': states.missing(),
+    'postgresql://u:p@localhost/s1': states.applied([TICKET_MIGRATION]),
+    'postgresql://u:p@localhost/s2': states.applied([TICKET_MIGRATION]),
+  };
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => {
+    lines.push(args.map(String).join(' '));
+  };
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('primary', 'postgresql://u:p@localhost/missing', true),
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect(urls),
+      runPrisma: recordingRunPrisma(),
+    });
+
+    assert.equal(summary.success, true);
+    const stdout = lines.join('\n');
+    assert.match(stdout, /✅ shard_1 {2}Synced/);
+    assert.match(stdout, /✅ shard_2 {2}Synced/);
+    assert.doesNotMatch(stdout, /primary|Skipped|Already up to date|Complete/);
+    assert.equal(
+      summary.results.filter((result) => result.message.startsWith('Skipped')).length,
+      1
+    );
+  } finally {
+    console.log = originalLog;
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('verbose update output keeps skip reasons, detailed statuses, and the Complete line', async () => {
+  const project = createProject([TICKET_MIGRATION]);
+  const urls = {
+    'postgresql://u:p@localhost/missing': states.missing(),
+    'postgresql://u:p@localhost/s1': states.applied([TICKET_MIGRATION]),
+    'postgresql://u:p@localhost/s2': states.applied([TICKET_MIGRATION]),
+  };
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => {
+    lines.push(args.map(String).join(' '));
+  };
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('primary', 'postgresql://u:p@localhost/missing', true),
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      verbose: true,
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect(urls),
+      runPrisma: recordingRunPrisma(),
+    });
+
+    assert.equal(summary.success, true);
+    const stdout = lines.join('\n');
+    assert.match(stdout, /⏭️ primary {2}Skipped \(DATABASE_URL not created\)/);
+    assert.match(stdout, /✅ shard_1 {2}Already up to date/);
+    assert.match(stdout, /✅ shard_2 {2}Already up to date/);
+    assert.match(stdout, /✅ Complete {2}All 2 databases are up to date/);
+    assert.doesNotMatch(stdout, /All 3 databases/);
+  } finally {
+    console.log = originalLog;
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test('one failed shard exits non-zero, leaves completed shards safe, and never falls back to push', async () => {
   const project = createProject([INIT_MIGRATION, TICKET_MIGRATION]);
   const urls = {
