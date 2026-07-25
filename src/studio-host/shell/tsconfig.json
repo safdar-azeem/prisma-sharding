@@ -1,0 +1,22 @@
+{
+  // The Studio host shell is the only browser code in this package.
+  //
+  // It is typechecked separately so `DOM` and `react-jsx` stay out of the
+  // server program: with `DOM` in the root config, the browser and Node
+  // declarations of `setTimeout` merge and every `NodeJS.Timeout` in the
+  // library and CLI becomes ambiguous. Keeping the two programs apart also
+  // means server modules cannot reference `window` or `document` by accident.
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["./**/*"],
+  "exclude": []
+}
