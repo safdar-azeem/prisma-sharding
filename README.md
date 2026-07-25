@@ -509,6 +509,34 @@ Ctrl+C stops only what the current run started. A reused host and its registry e
 left running for the command that owns them. On shutdown the server closes, every open
 database connection is disposed, and no timers or watchers are left behind.
 
+##### The Studio package
+
+Studio's UI, adapters and BFF contract come from `@prisma-sharding/studio`, published under
+the same `prisma-sharding` npm organisation as this package:
+
+| Package                    | Role                                                        |
+| -------------------------- | ----------------------------------------------------------- |
+| `prisma-sharding`          | Sharding library, CLI, and the Studio host                   |
+| `@prisma-sharding/studio`  | The embedded Studio UI, adapters and BFF contract            |
+
+It is a fork of Prisma's `@prisma/studio-core`, renamed so it is never published under or
+confused with the official package. It carries the two generic host extension points this
+integration needs (`headerEndContent` and `onPendingChangesChange`); everything else is
+upstream behaviour, and upstream attribution is preserved in its `NOTICE` and `LICENSE`.
+
+Note that `@prisma/studio-core` may still appear in your lockfile: the `prisma` CLI depends
+on it. That is Prisma's own copy and is unrelated to this one.
+
+To develop against a local checkout of the fork rather than a published version:
+
+```bash
+# in the studio fork
+pnpm build && pnpm link --global
+
+# in prisma-sharding
+yarn link @prisma-sharding/studio
+```
+
 ##### Prisma connection-string arguments
 
 Studio connects through `postgres.js` rather than Prisma's engine, and `postgres.js` forwards
@@ -653,7 +681,7 @@ BFF contract.
   same physical database as another shard and was folded into it. Both cases are reported
   in Studio.
 - **The picker is above Studio rather than in its header.** The installed
-  `@prisma/studio-core` predates the host extension points. Upgrade it to move the picker
+  `@prisma-sharding/studio` predates the host extension points. Upgrade it to move the picker
   into the header and re-enable the unsaved-edits guard.
 - **A port other than 51212.** The preferred port was taken by something the CLI refused to
   disturb. The printed URL is always the real one.
