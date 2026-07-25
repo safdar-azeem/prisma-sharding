@@ -1,14 +1,18 @@
-import { spawn, ChildProcess } from 'child_process';
-import { getNpxCommand, sanitizeCommandOutput } from './command';
-import { resolveSchemaPath } from './migrations';
-import { getPortUsage, probePrismaStudio, waitForPrismaStudio } from './ports';
-import { terminateChildProcess, waitForChildProcessClose } from './process';
+import { createStudioHostPostgresConnectionFactory } from '../../studio-host/studioHostPostgresConnection';
 import {
-  getShardConfigResult,
-  maskShardUrl,
-  NO_SHARDS_CONFIGURED_MESSAGE,
-  ShardConfig,
-} from './shards';
+  createStudioHostServer,
+  StudioHostServer,
+} from '../../studio-host/studioHostServer';
+import {
+  createStudioHostService,
+  StudioHostService,
+} from '../../studio-host/studioHostService';
+import {
+  NO_STUDIO_TARGETS_MESSAGE,
+  resolveStudioHostTargets,
+} from '../../studio-host/studioHostTargets';
+import { resolveSchemaPath } from './migrations';
+import { getPortUsage, probePrismaStudio } from './ports';
 import { getStudioOptions, StudioOptions } from './studio-options';
 import {
   computeStudioFingerprint,
@@ -18,49 +22,40 @@ import {
   writeStudioRegistryEntry,
 } from './studio-registry';
 
-type StudioStatus = 'started' | 'reused' | 'failed';
-type FailureSeverity = 'warning' | 'error';
-
-interface StudioInstance {
-  shardId: string;
-  port: number;
-  url: string;
-  status: StudioStatus;
-  process?: ChildProcess;
-  processGroup?: boolean;
-  message?: string;
-  details?: string;
-  severity?: FailureSeverity;
-  /** Startup lost a race for the port; the caller should try the next one. */
-  addressInUse?: boolean;
-}
-
 /**
- * Everything Studio needs is resolved from the project that invoked the CLI:
- * its working directory, its .env (already loaded), its schema, its shard
- * URLs. Nothing is resolved relative to the installed library.
+ * Starts ONE Studio host for the invoking project.
+ *
+ * The previous implementation spawned a `prisma studio` child process per
+ * shard, on sequential ports, producing one browser URL per database. This runs
+ * a single in-process HTTP server that serves every configured shard behind one
+ * URL, with the database chosen inside Studio.
+ *
+ * Everything is still resolved from the project that invoked the CLI: its
+ * working directory, its `.env` (already loaded by `studio.ts`), its schema and
+ * its shard URLs. Nothing resolves relative to the installed library.
+ *
+ * Because the host runs in this process rather than in spawned children, there
+ * are no child processes to track, orphan or force-kill; shutdown is closing
+ * one server and disposing one bounded connection pool.
  */
+
 const projectRoot = process.cwd();
 const projectSchemaPath = resolveSchemaPath(projectRoot) || '';
 
-const instances: StudioInstance[] = [];
+interface StartedHost {
+  port: number;
+  url: string;
+  reused: boolean;
+  server?: StudioHostServer;
+  service?: StudioHostService;
+}
+
+let startedHost: StartedHost | undefined;
 let activeOptions: StudioOptions | undefined;
 let isShuttingDown = false;
 let keepAliveTimer: NodeJS.Timeout | undefined;
 
 const studioUrl = (port: number): string => `http://localhost:${port}`;
-
-const isAddressInUseOutput = (output: string): boolean => output.includes('EADDRINUSE');
-
-const outputLooksReady = (output: string, port: number): boolean => {
-  const normalized = output.toLowerCase();
-  return (
-    normalized.includes('prisma studio is running') ||
-    normalized.includes('prisma studio is up') ||
-    normalized.includes(`localhost:${port}`) ||
-    normalized.includes(`127.0.0.1:${port}`)
-  );
-};
 
 const logVerbose = (
   options: StudioOptions,
@@ -72,73 +67,19 @@ const logVerbose = (
   }
 };
 
-const writeVerboseOutput = (
-  options: StudioOptions,
-  shardId: string,
-  shardUrl: string,
-  output: string,
-  writer: (line: string) => void
-): void => {
-  if (!options.verbose) {
-    return;
-  }
-
-  sanitizeCommandOutput(output, { DATABASE_URL: shardUrl })
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => writer(`   [${shardId}] ${line}`));
-};
-
-const failedInstance = (
-  shard: ShardConfig,
-  port: number,
-  message: string,
-  details?: string,
-  severity: FailureSeverity = 'error'
-): StudioInstance => {
-  return {
-    shardId: shard.id,
-    port,
-    url: studioUrl(port),
-    status: 'failed',
-    message,
-    details,
-    severity,
-  };
-};
-
-const reusedInstance = (shard: ShardConfig, port: number, details?: string): StudioInstance => {
-  return {
-    shardId: shard.id,
-    port,
-    url: studioUrl(port),
-    status: 'reused',
-    details,
-  };
-};
-
-const getShardPort = (shard: ShardConfig, options: StudioOptions): number => {
-  return options.basePort + shard.index;
-};
-
-/** Ports claimed during this run, so two shards never race for the same fallback. */
-const claimedPorts = new Set<number>();
-
 /**
- * Reuse is only safe when the occupant is provably OUR Studio: a registry
- * entry whose fingerprint matches this project root, schema, shard ID and
- * database target, whose recorded process is still alive, and whose port
- * actually answers like Prisma Studio. Anything else on the port - another
- * project's Studio, an unknown service - is left completely untouched and the
- * scan moves to the next port.
+ * Reuse is only safe when the occupant is provably OUR host for THIS project:
+ * a registry entry whose fingerprint matches the project root, schema and full
+ * shard set, whose recorded process is still alive, and whose port reports the
+ * same fingerprint from its own identity endpoint. Anything else on the port -
+ * another project's host, an unrelated service - is left completely untouched
+ * and the scan moves on.
  */
-const tryReuseMatchingStudio = async (
-  shard: ShardConfig,
+const tryReuseMatchingHost = async (
   port: number,
   fingerprint: string,
   options: StudioOptions
-): Promise<StudioInstance | undefined> => {
+): Promise<StartedHost | undefined> => {
   const entry = readStudioRegistryEntry(options.registryDirectory, port);
 
   if (!entry) {
@@ -159,7 +100,7 @@ const tryReuseMatchingStudio = async (
   if (entry.fingerprint !== fingerprint) {
     logVerbose(
       options,
-      `   Port ${port} runs Studio for a different project/database (${entry.projectRoot}, ${entry.shardId}); not reusing.`
+      `   Port ${port} runs a Studio host for a different project or shard set (${entry.projectRoot}); not reusing.`
     );
     return undefined;
   }
@@ -167,425 +108,281 @@ const tryReuseMatchingStudio = async (
   if (!options.reuseExisting) {
     logVerbose(
       options,
-      `   Matching Studio on port ${port} ignored because SHARD_STUDIO_REUSE_EXISTING is false.`
+      `   Matching Studio host on port ${port} ignored because SHARD_STUDIO_REUSE_EXISTING is false.`
     );
     return undefined;
   }
 
   const probe = await probePrismaStudio(port);
-  if (!probe.isPrismaStudio) {
+
+  if (!probe.isPrismaStudio || probe.fingerprint !== fingerprint) {
     logVerbose(
       options,
-      `   Registry matched port ${port} but it does not answer like Prisma Studio (${probe.detail}); not reusing.`
+      `   Registry matched port ${port} but the host did not confirm the same identity (${probe.detail}); not reusing.`
     );
     return undefined;
   }
 
-  return reusedInstance(
-    shard,
-    port,
-    'Existing Prisma Studio for this exact project, shard and database'
-  );
+  return { port, url: studioUrl(port), reused: true };
 };
 
-const startSpawnedStudio = (
-  shard: ShardConfig,
-  port: number,
-  options: StudioOptions
-): Promise<StudioInstance> => {
-  return new Promise((resolve) => {
-    const shardId = shard.id;
-    const processGroup = process.platform !== 'win32';
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let readySeen = false;
-    let addressInUse = false;
-    let stabilityTimer: NodeJS.Timeout | undefined;
-    let resolvedInstance: StudioInstance | undefined;
-
-    logVerbose(options, `\n🚀 Starting Prisma Studio for ${shardId} on port ${port}...`);
-    logVerbose(options, `   URL: ${maskShardUrl(shard.url)}`);
-
-    const studioProcess = spawn(
-      getNpxCommand(),
-      ['prisma', 'studio', '--port', port.toString(), '--browser', 'none'],
-      {
-        // The invoking project is authoritative: schema, prisma.config.*, env
-        // files and the generated client all resolve from ITS root, never from
-        // the installed library's directory.
-        cwd: projectRoot,
-        env: {
-          ...process.env,
-          DATABASE_URL: shard.url,
-        },
-        detached: processGroup,
-        shell: false,
-        stdio: 'pipe',
-      }
-    );
-
-    const settle = (instance: StudioInstance) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolvedInstance = instance;
-      if (stabilityTimer) {
-        clearTimeout(stabilityTimer);
-      }
-      resolve(instance);
-    };
-
-    const fail = (message: string, details?: string) => {
-      terminateChildProcess(studioProcess, { processGroup });
-      settle(failedInstance(shard, port, message, details));
-    };
-
-    const settleStartedAfterStability = () => {
-      if (settled || readySeen) {
-        return;
-      }
-
-      readySeen = true;
-      stabilityTimer = setTimeout(() => {
-        settle({
-          shardId,
-          port,
-          url: studioUrl(port),
-          status: 'started',
-          process: studioProcess,
-          processGroup,
-        });
-      }, options.stabilityMs);
-    };
-
-    studioProcess.stdout?.on('data', (data) => {
-      const output = data.toString();
-      stdout += output;
-
-      if (outputLooksReady(output, port)) {
-        settleStartedAfterStability();
-      }
-
-      writeVerboseOutput(options, shardId, shard.url, output, console.log);
-    });
-
-    studioProcess.stderr?.on('data', (data) => {
-      const output = data.toString();
-      stderr += output;
-
-      if (isAddressInUseOutput(output)) {
-        addressInUse = true;
-        return;
-      }
-
-      writeVerboseOutput(options, shardId, shard.url, output, console.error);
-    });
-
-    studioProcess.on('error', (err) => {
-      fail('Failed to start', err.message);
-    });
-
-    studioProcess.on('close', (code, signal) => {
-      const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-
-      if (settled) {
-        if (resolvedInstance?.status === 'started' && !isShuttingDown) {
-          console.warn(`⚠️ ${shardId} Studio exited after startup (${reason})`);
-        }
-        return;
-      }
-
-      if (readySeen) {
-        const output = (stderr || stdout).trim();
-        settle(
-          failedInstance(
-            shard,
-            port,
-            'Failed to start',
-            `Prisma Studio exited during startup stability check (${reason})${
-              output ? `: ${output}` : ''
-            }`
-          )
-        );
-        return;
-      }
-
-      if (addressInUse || isAddressInUseOutput(stderr)) {
-        // Lost a startup race for this port. The caller scans to the next
-        // free port; whatever claimed this one is left untouched.
-        settle({
-          ...failedInstance(
-            shard,
-            port,
-            'Port claimed by another process during startup',
-            undefined,
-            'warning'
-          ),
-          addressInUse: true,
-        });
-        return;
-      }
-
-      const output = (stderr || stdout).trim();
-      settle(
-        failedInstance(
-          shard,
-          port,
-          'Failed to start',
-          `Prisma Studio exited before it was ready (${reason})${output ? `: ${output}` : ''}`
-        )
-      );
-    });
-
-    waitForPrismaStudio(port, options.startupTimeoutMs, 400, () => !settled && !readySeen)
-      .then((probe) => {
-        if (settled || readySeen) {
-          return;
-        }
-
-        if (probe.isPrismaStudio) {
-          settleStartedAfterStability();
-          return;
-        }
-
-        fail('Failed to start', `Timed out waiting for ${studioUrl(port)} (${probe.detail})`);
-      })
-      .catch((error: Error) => {
-        if (!settled) {
-          fail('Failed to start', error.message);
-        }
-      });
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
   });
+
+const startOwnHost = async (
+  port: number,
+  service: StudioHostService,
+  options: StudioOptions
+): Promise<{ host?: StartedHost; addressInUse?: boolean; error?: Error }> => {
+  const server = createStudioHostServer({
+    service,
+    host: options.bindHost,
+    logger: { warn: (message) => logVerbose(options, `   ${message}`, console.warn) },
+  });
+
+  let listeningPort: number;
+
+  try {
+    listeningPort = await Promise.race([
+      server.listen(port),
+      wait(options.startupTimeoutMs).then<number>(() => {
+        throw new Error(`Timed out binding port ${port}`);
+      }),
+    ]);
+  } catch (error) {
+    await server.close().catch(() => undefined);
+
+    if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      // Lost a startup race for this port. The caller scans on, and whatever
+      // claimed the port is left untouched.
+      return { addressInUse: true };
+    }
+
+    return { error: error as Error };
+  }
+
+  // A host that binds and immediately dies must not be reported as started.
+  await wait(options.stabilityMs);
+
+  if (!server.server.listening) {
+    await server.close().catch(() => undefined);
+    return { error: new Error('The Studio host stopped immediately after starting.') };
+  }
+
+  return {
+    host: {
+      port: listeningPort,
+      url: studioUrl(listeningPort),
+      reused: false,
+      server,
+      service,
+    },
+  };
 };
 
-const startStudio = async (
-  shard: ShardConfig,
-  options: StudioOptions
-): Promise<StudioInstance> => {
-  const preferredPort = getShardPort(shard, options);
+const printFailure = (options: StudioOptions, lastError?: Error): void => {
+  console.log('🗄️ Prisma Sharding Studio\n');
+  console.log(
+    `❌ Studio  ${
+      lastError
+        ? 'Failed to start'
+        : `No free port in ${options.basePort}-${options.basePort + options.portScanLimit - 1}`
+    }`
+  );
+
+  if (options.verbose) {
+    console.log(
+      `\n   ${
+        lastError?.message ||
+        'Every occupied port belonged to another project or process and was left untouched.'
+      }`
+    );
+    return;
+  }
+
+  console.log('\nRun with SHARD_STUDIO_VERBOSE=true for details.');
+};
+
+/** One URL, plus one line about how many databases it serves. */
+const printResult = (shardCount: number, options: StudioOptions): void => {
+  if (!startedHost) {
+    return;
+  }
+
+  const icon = startedHost.reused ? '♻️' : '✅';
+  const databases = `${shardCount} ${shardCount === 1 ? 'database' : 'databases'}`;
+
+  console.log('🗄️ Prisma Sharding Studio\n');
+  console.log(`${icon} Studio  ${startedHost.url}`);
+  console.log(`   ${databases} available. Switch between them inside Studio.`);
+
+  if (!options.verbose) {
+    return;
+  }
+
+  console.log('\nVerbose details:');
+  console.log(`   Base port: ${options.basePort}`);
+  console.log(`   Bound interface: ${options.bindHost}`);
+  console.log(`   Reuse existing host: ${options.reuseExisting ? 'yes' : 'no'}`);
+  console.log(`   Startup timeout: ${options.startupTimeoutMs}ms`);
+  console.log(`   Startup stability window: ${options.stabilityMs}ms`);
+  console.log(`   Max open shard connections: ${options.maxOpenConnections}`);
+  console.log(`   Idle connection timeout: ${options.idleConnectionTimeoutMs}ms`);
+  console.log(`   Owned by this run: ${startedHost.reused ? 'no (reused)' : 'yes'}`);
+};
+
+const startStudioHost = async (options: StudioOptions): Promise<boolean> => {
+  const targetsResult = resolveStudioHostTargets();
+
+  if (targetsResult.targets.length === 0) {
+    console.log('🗄️ Prisma Sharding Studio\n');
+    console.error(`❌ ${NO_STUDIO_TARGETS_MESSAGE}`);
+    process.exit(1);
+  }
+
+  if (targetsResult.missingShardIds.length > 0) {
+    logVerbose(
+      options,
+      `Missing shard URLs: ${targetsResult.missingShardIds.join(', ')}`,
+      console.warn
+    );
+  }
+
+  for (const duplicate of targetsResult.duplicates) {
+    logVerbose(
+      options,
+      `${duplicate.id} points at the same database as ${duplicate.sameAs}; listed once.`,
+      console.warn
+    );
+  }
+
   const fingerprint = computeStudioFingerprint({
     projectRoot,
     schemaPath: projectSchemaPath,
-    shardId: shard.id,
-    url: shard.url,
+    targets: targetsResult.targets,
   });
 
+  let service: StudioHostService | undefined;
+  let lastError: Error | undefined;
+
   for (
-    let candidate = preferredPort;
-    candidate < preferredPort + options.portScanLimit;
+    let candidate = options.basePort;
+    candidate < options.basePort + options.portScanLimit;
     candidate++
   ) {
-    if (claimedPorts.has(candidate)) {
-      continue;
-    }
-
-    logVerbose(options, `\n🔎 Checking ${shard.id} Studio port ${candidate}...`);
+    logVerbose(options, `\n🔎 Checking Studio host port ${candidate}...`);
     const portUsage = await getPortUsage(candidate);
 
     if (portUsage.status === 'unavailable') {
-      logVerbose(options, `   Port ${candidate} could not be checked safely; trying the next one.`);
+      logVerbose(
+        options,
+        `   Port ${candidate} could not be checked safely; trying the next one.`
+      );
       continue;
     }
 
     if (portUsage.status === 'occupied') {
-      const reused = await tryReuseMatchingStudio(shard, candidate, fingerprint, options);
+      const reused = await tryReuseMatchingHost(candidate, fingerprint, options);
+
       if (reused) {
-        claimedPorts.add(candidate);
-        return reused;
+        startedHost = reused;
+        printResult(targetsResult.targets.length, options);
+        return true;
       }
-      // Foreign Studio or unknown service: never reused, never killed.
+
       continue;
     }
 
-    const instance = await startSpawnedStudio(shard, candidate, options);
-
-    if (instance.status === 'failed' && instance.addressInUse) {
-      continue; // Lost the race for this port; scan on.
-    }
-
-    if (instance.status === 'started') {
-      claimedPorts.add(candidate);
-      writeStudioRegistryEntry(options.registryDirectory, {
-        version: 1,
-        port: candidate,
-        pid: instance.process?.pid ?? process.pid,
-        fingerprint,
-        shardId: shard.id,
+    // Built once and carried across port attempts, so losing a port race never
+    // opens and abandons database connections.
+    if (!service) {
+      service = createStudioHostService({
         projectRoot,
-        createdAt: new Date().toISOString(),
+        schemaPath: projectSchemaPath,
+        maxOpenConnections: options.maxOpenConnections,
+        idleTimeoutMs: options.idleConnectionTimeoutMs,
+        createConnection: createStudioHostPostgresConnectionFactory(),
+        logger: {
+          info: (message) => logVerbose(options, `   ${message}`),
+          warn: (message) => logVerbose(options, `   ${message}`, console.warn),
+          error: (message) => logVerbose(options, `   ${message}`, console.error),
+        },
       });
-      if (candidate !== preferredPort) {
-        logVerbose(
-          options,
-          `   Preferred port ${preferredPort} was busy; ${shard.id} is on ${candidate}.`
-        );
-      }
     }
 
-    return instance;
+    const attempt = await startOwnHost(candidate, service, options);
+
+    if (attempt.addressInUse) {
+      continue;
+    }
+
+    if (attempt.error) {
+      lastError = attempt.error;
+      break;
+    }
+
+    startedHost = attempt.host;
+
+    if (!startedHost) {
+      continue;
+    }
+
+    writeStudioRegistryEntry(options.registryDirectory, {
+      version: 2,
+      port: startedHost.port,
+      pid: process.pid,
+      fingerprint,
+      shardCount: targetsResult.targets.length,
+      projectRoot,
+      createdAt: new Date().toISOString(),
+    });
+
+    if (startedHost.port !== options.basePort) {
+      logVerbose(
+        options,
+        `   Preferred port ${options.basePort} was busy; the Studio host is on ${startedHost.port}.`
+      );
+    }
+
+    printResult(targetsResult.targets.length, options);
+    return true;
   }
 
-  return failedInstance(
-    shard,
-    preferredPort,
-    'No free port found',
-    `No reusable or free port in ${preferredPort}-${
-      preferredPort + options.portScanLimit - 1
-    }. Every occupied port belonged to another project or process and was left untouched.`
-  );
+  // Nothing started: release whatever the attempt opened before reporting.
+  await service?.dispose().catch(() => undefined);
+  printFailure(options, lastError);
+
+  return false;
 };
 
-const getStatusIcon = (instance: StudioInstance): string => {
-  if (instance.status === 'started') {
-    return '✅';
-  }
-  if (instance.status === 'reused') {
-    return '♻️';
-  }
-  return instance.severity === 'warning' ? '⚠️' : '❌';
-};
-
-const getStatusText = (instance: StudioInstance): string => {
-  if (instance.status === 'started' || instance.status === 'reused') {
-    return instance.url;
-  }
-  return instance.message || 'Failed to start';
-};
-
-const printCompactResults = (results: StudioInstance[], options: StudioOptions): void => {
-  const failed = results.filter((instance) => instance.status === 'failed');
-  const hasErrorFailure = failed.some((instance) => instance.severity !== 'warning');
-
-  console.log('🗄️ Prisma Sharding Studio\n');
-
-  results.forEach((instance) => {
-    console.log(`${getStatusIcon(instance)} ${instance.shardId}  ${getStatusText(instance)}`);
-  });
-
-  if (options.verbose) {
-    printVerboseSummary(results, options);
-  }
-
-  if (hasErrorFailure && !options.verbose) {
-    console.log('\nRun with SHARD_STUDIO_VERBOSE=true for details.');
-  }
-};
-
-const printVerboseSummary = (results: StudioInstance[], options: StudioOptions): void => {
-  const started = results.filter((instance) => instance.status === 'started');
-  const reused = results.filter((instance) => instance.status === 'reused');
-  const failed = results.filter((instance) => instance.status === 'failed');
-
-  console.log('\nVerbose details:');
-  console.log(`   Base port: ${options.basePort}`);
-  console.log(`   Reuse existing Studio ports: ${options.reuseExisting ? 'yes' : 'no'}`);
-  console.log(`   Startup timeout: ${options.startupTimeoutMs}ms`);
-  console.log(`   Startup stability window: ${options.stabilityMs}ms`);
-  console.log(`   Strict port check: ${options.strictPortCheck ? 'yes' : 'no'}`);
-  console.log(`   Total: ${results.length}`);
-  console.log(`   Started: ${started.length}`);
-  console.log(`   Reused: ${reused.length}`);
-  console.log(`   Failed: ${failed.length}`);
-
-  failed.forEach((instance) => {
-    console.log(`   ${instance.shardId}: ${instance.details || instance.message || 'Failed'}`);
-  });
-};
-
-const getOwnedInstances = (): Array<StudioInstance & { process: ChildProcess }> => {
-  return instances.filter(
-    (instance): instance is StudioInstance & { process: ChildProcess } =>
-      instance.status === 'started' && Boolean(instance.process)
-  );
-};
-
-const shutdownOwnedInstances = async (
-  options: StudioOptions,
-  announce = true
-): Promise<void> => {
-  const ownedInstances = getOwnedInstances();
-
-  if (ownedInstances.length === 0) {
+/**
+ * Stops only what THIS run created.
+ *
+ * A reused host keeps running and keeps its registry entry, so stopping one
+ * project's command never affects another project's Studio, and a second
+ * terminal for the same project never stops the first one's host.
+ */
+const shutdownOwnedHost = async (options: StudioOptions): Promise<void> => {
+  if (!startedHost || startedHost.reused) {
     return;
   }
 
-  if (announce) {
-    console.log('\nStopping owned Studio processes...');
-  }
+  const { server, service, port } = startedHost;
 
-  ownedInstances.forEach((instance) => {
-    logVerbose(options, `   Stopping ${instance.shardId}...`);
-    terminateChildProcess(instance.process, { processGroup: instance.processGroup });
-  });
+  removeStudioRegistryEntry(options.registryDirectory, port);
 
-  const closed = await Promise.all(
-    ownedInstances.map((instance) =>
-      waitForChildProcessClose(instance.process, options.shutdownTimeoutMs)
-    )
-  );
-
-  closed.forEach((didClose, index) => {
-    if (!didClose) {
-      const instance = ownedInstances[index];
-      logVerbose(options, `   Force stopping ${instance.shardId}...`, console.warn);
-      terminateChildProcess(instance.process, {
-        signal: 'SIGKILL',
-        processGroup: instance.processGroup,
-      });
-    }
-  });
-
-  // Only entries for processes THIS run started are removed. Reused instances
-  // and other projects' Studios keep their registrations untouched.
-  ownedInstances.forEach((instance) => {
-    removeStudioRegistryEntry(options.registryDirectory, instance.port);
-  });
-
-  if (announce) {
-    console.log('Stopped.');
-  }
-};
-
-const startAllStudios = async (): Promise<void> => {
-  const options = getStudioOptions();
-  const { shards, missingShardIds } = getShardConfigResult();
-  activeOptions = options;
-
-  if (shards.length === 0) {
-    console.log('🗄️ Prisma Sharding Studio\n');
-    console.error(`❌ ${NO_SHARDS_CONFIGURED_MESSAGE}`);
-    process.exit(1);
-  }
-
-  if (missingShardIds.length > 0) {
-    logVerbose(options, `Missing shard URLs: ${missingShardIds.join(', ')}`, console.warn);
-  }
-
-  for (const shard of shards) {
-    try {
-      const instance = await startStudio(shard, options);
-      instances.push(instance);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      instances.push(failedInstance(shard, getShardPort(shard, options), 'Failed to start', message));
-    }
-  }
-
-  printCompactResults(instances, options);
-
-  const failed = instances.filter((instance) => instance.status === 'failed');
-  if (failed.length > 0 && options.strictPortCheck) {
-    isShuttingDown = true;
-    await shutdownOwnedInstances(options, options.verbose);
-    process.exit(1);
-  }
-
-  if (failed.length === 0 && getOwnedInstances().length === 0) {
-    keepAliveTimer = setInterval(() => undefined, 2_147_483_647);
-  }
+  // Bounded: a database that stopped responding must not prevent the CLI from
+  // exiting, while the happy path still closes every pool cleanly.
+  await Promise.race([
+    Promise.allSettled([
+      server?.close() ?? Promise.resolve(),
+      service?.dispose() ?? Promise.resolve(),
+    ]).then(() => undefined),
+    wait(options.shutdownTimeoutMs),
+  ]);
 };
 
 const gracefulShutdown = async (): Promise<void> => {
@@ -594,23 +391,44 @@ const gracefulShutdown = async (): Promise<void> => {
   }
 
   isShuttingDown = true;
+
   if (keepAliveTimer) {
     clearInterval(keepAliveTimer);
     keepAliveTimer = undefined;
   }
+
   const options = activeOptions || getStudioOptions();
-  await shutdownOwnedInstances(options, options.verbose);
+  await shutdownOwnedHost(options);
   process.exit(0);
 };
 
 process.on('SIGINT', () => {
   void gracefulShutdown();
 });
+
 process.on('SIGTERM', () => {
   void gracefulShutdown();
 });
 
-startAllStudios().catch((error) => {
-  console.error('Failed to start studios:', error);
+const run = async (): Promise<void> => {
+  const options = getStudioOptions();
+  activeOptions = options;
+
+  const started = await startStudioHost(options);
+
+  if (!started) {
+    process.exit(options.strictPortCheck ? 1 : 0);
+  }
+
+  if (startedHost?.reused) {
+    // A reused host lives in another process, so nothing here holds the event
+    // loop open. The command stays attached anyway, so Ctrl+C behaves the same
+    // whether the host was reused or started by this run.
+    keepAliveTimer = setInterval(() => undefined, 2_147_483_647);
+  }
+};
+
+run().catch((error) => {
+  console.error('Failed to start Studio:', error instanceof Error ? error.message : error);
   process.exit(1);
 });
