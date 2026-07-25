@@ -34,16 +34,23 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./studio-host": {
+      "types": "./dist/studio-host/index.d.ts",
+      "import": "./dist/studio-host/index.mjs",
+      "require": "./dist/studio-host/index.js"
     }
   },
   "scripts": {
-    "build": "yarn build:lib && yarn build:cli",
+    "build": "yarn build:lib && yarn build:cli && yarn build:studio-host && yarn build:studio-shell",
     "build:lib": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "build:cli": "tsup src/cli/update.ts src/cli/migrate.ts src/cli/baseline.ts src/cli/push.ts src/cli/studio.ts src/cli/test.ts src/cli/utils/command.ts src/cli/utils/postgres.ts src/cli/utils/pipeline.ts src/cli/utils/update-cli.ts src/cli/utils/baseline-core.ts src/cli/utils/config.ts src/cli/utils/studio-registry.ts src/cli/utils/shards.ts src/cli/utils/migrations.ts src/cli/utils/migration-state.ts src/cli/utils/introspect.ts src/cli/utils/unsafe-push.ts src/cli/utils/prisma.ts --format cjs --outDir dist/cli --clean",
+    "build:cli": "tsup src/cli/update.ts src/cli/migrate.ts src/cli/baseline.ts src/cli/push.ts src/cli/studio.ts src/cli/test.ts src/cli/utils/command.ts src/cli/utils/postgres.ts src/cli/utils/pipeline.ts src/cli/utils/update-cli.ts src/cli/utils/baseline-core.ts src/cli/utils/config.ts src/cli/utils/studio-registry.ts src/cli/utils/studio-options.ts src/cli/utils/shards.ts src/cli/utils/migrations.ts src/cli/utils/migration-state.ts src/cli/utils/introspect.ts src/cli/utils/unsafe-push.ts src/cli/utils/prisma.ts --format cjs --outDir dist/cli --clean",
+    "build:studio-host": "tsup src/studio-host/index.ts --format cjs,esm --dts --outDir dist/studio-host",
+    "build:studio-shell": "node scripts/buildStudioHostAssets.mjs",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "test": "yarn build && node --test test/*.test.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/studio-host/shell",
     "prepublishOnly": "yarn build",
     "patch": "yarn version --patch && yarn publish",
     "minor": "yarn version --minor && yarn publish",
@@ -54,16 +61,23 @@
     "@prisma/client": ">=5.0.0"
   },
   "dependencies": {
+    "@prisma/studio-core": "^0.33.0",
     "dotenv": "^16.3.1",
-    "pg": "^8.18.0"
+    "pg": "^8.18.0",
+    "postgres": "^3.4.7"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/pg": "^8.16.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "prisma": "^7.3.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
+    "esbuild": "^0.27.0",
     "eslint": "^8.55.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "tsup": "^8.0.1",
     "typescript": "^5.3.0"
   },
