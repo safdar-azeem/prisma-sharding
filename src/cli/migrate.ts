@@ -1,41 +1,15 @@
 #!/usr/bin/env node
+/**
+ * Backward-compatible alias for `prisma-sharding-update`. It runs the same shared
+ * pipeline and only skips the client generation step, which callers of this
+ * command historically did themselves.
+ */
 import 'dotenv/config';
-import { isVerboseEnv } from '../utils/env';
-import { printCliHeader, printCliRow, printVerboseHint } from './utils/output';
-import { deployShardMigrations } from './utils/prisma';
-import { getShardConfigResult, NO_SHARDS_CONFIGURED_MESSAGE } from './utils/shards';
+import { runUpdateCliAndExit } from './utils/update-cli';
 
-const migrateAllShards = async (): Promise<void> => {
-  const verbose = isVerboseEnv(['SHARD_MIGRATE_VERBOSE', 'SHARD_CLI_VERBOSE']);
-  const { shards, missingShardIds } = getShardConfigResult();
-  const extraArgs = process.argv.slice(2);
-
-  printCliHeader('🔄', 'Prisma Sharding Migrate');
-
-  if (missingShardIds.length > 0) {
-    printCliRow('❌', 'config', `Missing shard URLs: ${missingShardIds.join(', ')}`);
-    process.exit(1);
-  }
-
-  if (shards.length === 0) {
-    printCliRow('❌', 'config', NO_SHARDS_CONFIGURED_MESSAGE);
-    process.exit(1);
-  }
-
-  const results = await deployShardMigrations(shards, extraArgs, verbose);
-
-  const successful = results.filter((result) => result.success).length;
-  const failed = results.length - successful;
-
-  if (failed > 0) {
-    if (!verbose) {
-      printVerboseHint();
-    }
-    process.exit(1);
-  }
-};
-
-migrateAllShards().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+runUpdateCliAndExit({
+  title: 'Prisma Sharding Migrate',
+  retryHint: 'yarn db:update',
+  generateClient: false,
+  verboseEnvNames: ['SHARD_MIGRATE_VERBOSE', 'SHARD_CLI_VERBOSE'],
 });
