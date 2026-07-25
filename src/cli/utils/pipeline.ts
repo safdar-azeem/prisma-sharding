@@ -221,13 +221,15 @@ const pushFallback = async ({
     };
   }
 
-  printCliRow('ℹ️', 'migrations', directoryError);
-  printCliRow(
-    'ℹ️',
-    'push',
-    'No migration history to apply - synchronising schemas directly (development only).'
-  );
-  console.log('');
+  if (verbose) {
+    printCliRow('ℹ️', 'migrations', directoryError);
+    printCliRow(
+      'ℹ️',
+      'push',
+      'No migration history to apply - synchronising schemas directly (development only).'
+    );
+    console.log('');
+  }
 
   const results: TargetUpdateResult[] = [];
   let failedAny = false;
@@ -249,7 +251,7 @@ const pushFallback = async ({
     const pushed = await execute(target, ['db', 'push', ...extraArgs], 'Pushing schema to');
 
     if (pushed.success) {
-      loader.succeed('Schema synchronised');
+      loader.succeed(verbose ? 'Schema synchronised' : 'Synced');
       results.push({
         id: target.id,
         success: true,
@@ -317,7 +319,8 @@ const pushFallback = async ({
  *
  *   validate flags → generate client once → discover committed migrations →
  *   silently preflight every database → adopt a configured legacy baseline →
- *   apply pending migrations in order → verify → one final line per database.
+ *   apply pending migrations in order → verify → one quiet `Synced` line per
+ *   active database (detailed statuses only when verbose).
  *
  * Committed migrations are always authoritative. `db push` is only a
  * development-time fallback when no migration files exist at all, and no
@@ -624,7 +627,9 @@ export const runDatabaseUpdate = async (
     }
 
     if (entry.skipped) {
-      printCliRow('⏭️', target.id, 'Skipped (DATABASE_URL not created)');
+      if (verbose) {
+        printCliRow('⏭️', target.id, 'Skipped (DATABASE_URL not created)');
+      }
       results.push({
         id: target.id,
         success: true,
@@ -741,7 +746,8 @@ export const runDatabaseUpdate = async (
       });
     }
 
-    // 5d. One unambiguous final line.
+    // 5d. One unambiguous final line. Normal mode stays quiet with a single
+    // success status; migration counts and "already up to date" live in verbose.
     const parts: string[] = [];
     if (baselineCount > 0) {
       parts.push(`Baselined ${baselineCount}`);
@@ -751,7 +757,7 @@ export const runDatabaseUpdate = async (
     }
     const message = parts.length > 0 ? parts.join(', ') : 'Already up to date';
 
-    loader.succeed(message);
+    loader.succeed(verbose ? message : 'Synced');
     results.push({
       id: target.id,
       success: true,
@@ -761,50 +767,63 @@ export const runDatabaseUpdate = async (
     });
   }
 
-  // 6. Grouped, non-repeating warnings.
-  const driftIds = warnings.filter((w) => w.kind === 'drift').map((w) => w.id);
-  const verifyWarnings = warnings.filter((w) => w.kind === 'verify');
-  const noteGroups = new Map<string, string[]>();
-  for (const warning of warnings) {
-    if (warning.kind === 'note') {
-      const ids = noteGroups.get(warning.message) || [];
-      ids.push(warning.id);
-      noteGroups.set(warning.message, ids);
+  // 6. Grouped, non-repeating warnings (verbose only — routine runs stay quiet).
+  if (verbose) {
+    const driftIds = warnings.filter((w) => w.kind === 'drift').map((w) => w.id);
+    const verifyWarnings = warnings.filter((w) => w.kind === 'verify');
+    const noteGroups = new Map<string, string[]>();
+    for (const warning of warnings) {
+      if (warning.kind === 'note') {
+        const ids = noteGroups.get(warning.message) || [];
+        ids.push(warning.id);
+        noteGroups.set(warning.message, ids);
+      }
     }
-  }
 
-  if (driftIds.length > 0 || verifyWarnings.length > 0 || noteGroups.size > 0) {
-    console.log('');
-  }
-  if (driftIds.length > 0) {
-    printCliRow(
-      '⚠️',
-      'drift',
-      `${driftIds.join(', ')}: live schema differs from the datamodel (often an equivalent index/opclass form). Not blocking; enforce with SHARD_STRICT_DRIFT=true, inspect with SHARD_CLI_VERBOSE=true.`
-    );
-  }
-  if (verifyWarnings.length > 0) {
-    printCliRow(
-      '⚠️',
-      'verify',
-      `${verifyWarnings.map((w) => w.id).join(', ')}: schema verification could not run (${
-        verifyWarnings[0].message
-      }).`
-    );
-  }
-  for (const [message, ids] of noteGroups) {
-    printCliRow('⚠️', 'note', `${ids.join(', ')}: ${message}`);
+    if (driftIds.length > 0 || verifyWarnings.length > 0 || noteGroups.size > 0) {
+      console.log('');
+    }
+    if (driftIds.length > 0) {
+      printCliRow(
+        '⚠️',
+        'drift',
+        `${driftIds.join(', ')}: live schema differs from the datamodel (often an equivalent index/opclass form). Not blocking; enforce with SHARD_STRICT_DRIFT=true.`
+      );
+    }
+    if (verifyWarnings.length > 0) {
+      printCliRow(
+        '⚠️',
+        'verify',
+        `${verifyWarnings.map((w) => w.id).join(', ')}: schema verification could not run (${
+          verifyWarnings[0].message
+        }).`
+      );
+    }
+    for (const [message, ids] of noteGroups) {
+      printCliRow('⚠️', 'note', `${ids.join(', ')}: ${message}`);
+    }
   }
 
   // 7. One final, unambiguous outcome.
   const failedCount = results.filter((result) => !result.success).length;
-  console.log('');
+  // Placeholder primary databases are never part of the active fleet count.
+  const activeDatabaseCount = results.filter(
+    (result) => !result.message.startsWith('Skipped')
+  ).length;
 
   if (failedCount === 0) {
-    printCliRow('✅', 'Complete', `All ${targets.length} databases are up to date`);
+    if (verbose) {
+      console.log('');
+      printCliRow(
+        '✅',
+        'Complete',
+        `All ${activeDatabaseCount} databases are up to date`
+      );
+    }
     return { success: true, strategy: 'migrate', results, warnings };
   }
 
+  console.log('');
   if (firstError && !verbose) {
     console.error(firstError.trim());
     console.log('');
