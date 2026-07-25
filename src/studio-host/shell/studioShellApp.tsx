@@ -1,4 +1,4 @@
-import { Studio } from '@prisma/studio-core/ui';
+import { Studio } from '@prisma-sharding/studio/ui';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StudioShardManifest } from '../studioHostManifest';
 import { checkStudioShardStatus, fetchStudioShardManifest } from './studioShellApi';
