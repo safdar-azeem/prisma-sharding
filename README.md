@@ -420,21 +420,35 @@ SHARD_STUDIO_BASE_PORT=52000 yarn db:studio
 # shard_1 -> :52000, shard_2 -> :52001, etc.
 ```
 
-Studio startup is safe to run from multiple local APIs. Before starting a shard Studio,
-the CLI checks whether the target port is already active. If it finds an existing Prisma
-Studio on that port, it reuses it instead of spawning another process:
+Studio is fully project-isolated. Every instance is resolved from the project that ran the
+command — its working directory, `.env`, `prisma.config.*`, schema and shard URLs — and each
+spawned Studio runs with that project as its working directory and receives exactly that
+shard's `DATABASE_URL`. Nothing is resolved from the installed library's own directory.
+
+Reuse is identity-verified, never port-guessed. When the CLI starts a Studio it records a
+credential-free fingerprint (SHA-256 of project root, schema path, shard ID, and the
+database target with credentials stripped) in a per-user registry. An occupied port is only
+reused when that registry entry matches the current project **and** database, the recorded
+process is alive, and the port answers like Prisma Studio:
 
 ```text
 🗄️ Prisma Sharding Studio
 
-♻️ shard_1  http://localhost:51212
-♻️ shard_2  http://localhost:51213
-♻️ shard_3  http://localhost:51214
+♻️ shard_1  http://localhost:51212   ← same project, same database: safe reuse
 ```
 
-If a port is occupied by another process that does not look like Prisma Studio, the shard
-is marked with a warning and the CLI continues with the remaining shards. It will not kill,
-restart, or claim ownership of processes it did not start.
+Anything else on the port — another project's Studio, an unknown service — is left
+completely untouched (never reused, never killed) and the CLI automatically starts on the
+next free port, printing the actual assigned URL. Two projects with identical shard names
+can run side by side:
+
+```text
+Project A: shard_1 → http://localhost:51212
+Project B: shard_1 → http://localhost:51213   (51212 belonged to Project A)
+```
+
+Stopping one project's Studio command only stops the processes that command started; other
+projects' Studios and their registry entries are untouched.
 
 Default output is intentionally compact:
 
@@ -461,11 +475,18 @@ Useful Studio environment variables:
   it is reported as started. Defaults to `500`.
 - `SHARD_STUDIO_SHUTDOWN_TIMEOUT_MS`: time to wait for owned Studio processes to close during
   shutdown before sending a force-stop signal. Defaults to `5000`.
+- `SHARD_STUDIO_PORT_SCAN_LIMIT`: how many ports above the preferred one to try when ports
+  are held by other projects or processes. Defaults to `100`.
+- `SHARD_STUDIO_REGISTRY_DIR`: location of the per-user Studio identity registry. Defaults
+  to a `prisma-sharding-studio` directory in the OS temp dir. Entries contain only
+  credential-free fingerprints, ports, pids and project roots.
 - `SHARD_STUDIO_VERBOSE`: print detailed Studio startup diagnostics. Defaults to `false`.
 - `SHARD_STUDIO_DEBUG`: alias for `SHARD_STUDIO_VERBOSE`.
 
-When multiple APIs use the same shard configuration locally, the first API starts the Studio
-processes and later APIs reuse the existing Studio ports. Reused-only commands stay quietly
+When the same project runs `db:studio` from multiple terminals, the first run starts the
+Studio processes and later runs reuse them after verifying the identity fingerprint.
+Different projects never share Studio processes, even when they point at the same databases —
+each project gets its own instances on its own ports. Reused-only commands stay quietly
 attached, preventing process supervisors from printing a normal child-exit message. Pressing
 Ctrl+C only stops Studio processes started by the current CLI run; reused processes are left running.
 
