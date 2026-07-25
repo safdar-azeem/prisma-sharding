@@ -152,8 +152,8 @@ test('an empty database receives every migration and reports success', { skip },
     await withSchemas(1, async (admin, [schemaName], [url]) => {
       const run = await runUpdate(project, [url]);
       assert.equal(run.code, 0, run.stdout + run.stderr);
-      assert.match(run.stdout, /1 migration applied/);
-      assert.match(run.stdout, /Complete/);
+      assert.match(run.stdout, /Synced/);
+      assert.doesNotMatch(run.stdout, /1 migration applied|Complete/);
 
       const table = await admin.query(
         `SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'Item'`,
@@ -244,7 +244,7 @@ test('a second-shard failure preserves completed shards and retries cleanly', { 
 
       const partial = await runUpdate(project, urls);
       assert.equal(partial.code, 1);
-      assert.match(partial.stdout, /✅ shard_1 {2}1 migration applied/);
+      assert.match(partial.stdout, /✅ shard_1 {2}Synced/);
       assert.match(partial.stdout, new RegExp(`❌ shard_2 {2}${UNIQUE} failed`));
       assert.match(partial.stdout, /⏭️ shard_3 {2}Not attempted/);
 
@@ -265,10 +265,10 @@ test('a second-shard failure preserves completed shards and retries cleanly', { 
 
       const retried = await runUpdate(project, urls);
       assert.equal(retried.code, 0, retried.stdout + retried.stderr);
-      assert.match(retried.stdout, /✅ shard_1 {2}Already up to date/);
-      assert.match(retried.stdout, /✅ shard_2 {2}1 migration applied/);
-      assert.match(retried.stdout, /✅ shard_3 {2}1 migration applied/);
-      assert.match(retried.stdout, /Complete/);
+      assert.match(retried.stdout, /✅ shard_1 {2}Synced/);
+      assert.match(retried.stdout, /✅ shard_2 {2}Synced/);
+      assert.match(retried.stdout, /✅ shard_3 {2}Synced/);
+      assert.doesNotMatch(retried.stdout, /Already up to date|1 migration applied|Complete/);
     });
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
@@ -292,7 +292,8 @@ test('editing an applied migration is caught by checksum validation', { skip }, 
       fs.writeFileSync(migrationFile, INIT_SQL);
       const restored = await runUpdate(project, [url]);
       assert.equal(restored.code, 0, restored.stdout + restored.stderr);
-      assert.match(restored.stdout, /Already up to date/);
+      assert.match(restored.stdout, /Synced/);
+      assert.doesNotMatch(restored.stdout, /Already up to date/);
     });
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
@@ -312,9 +313,8 @@ test('equivalent or manual drift warns without blocking, and strict mode enforce
 
       const relaxed = await runUpdate(project, [url]);
       assert.equal(relaxed.code, 0, 'drift must not block routine startup');
-      assert.match(relaxed.stdout, /Already up to date/);
-      assert.match(relaxed.stdout, /drift/);
-      assert.match(relaxed.stdout, /Complete/);
+      assert.match(relaxed.stdout, /Synced/);
+      assert.doesNotMatch(relaxed.stdout, /Already up to date|drift|Complete/);
 
       const strict = await runUpdate(project, [url], { SHARD_STRICT_DRIFT: 'true' });
       assert.equal(strict.code, 1, 'strict mode turns drift into a failure');
@@ -332,17 +332,17 @@ test(`a ${SHARD_FLEET_SIZE}-shard fleet logs one line per shard and reruns idemp
       assert.equal(first.code, 0, first.stdout + first.stderr);
       const appliedLines = first.stdout
         .split('\n')
-        .filter((line) => line.includes('1 migration applied'));
+        .filter((line) => /✅ shard_\d+ {2}Synced/.test(line));
       assert.equal(appliedLines.length, SHARD_FLEET_SIZE, 'exactly one line per shard');
-      assert.equal(first.stdout.split('\n').filter((l) => l.includes('Complete')).length, 1);
+      assert.doesNotMatch(first.stdout, /1 migration applied|Complete/);
 
       const second = await runUpdate(project, urls);
       assert.equal(second.code, 0, second.stdout + second.stderr);
       const upToDateLines = second.stdout
         .split('\n')
-        .filter((line) => line.includes('Already up to date'));
+        .filter((line) => /✅ shard_\d+ {2}Synced/.test(line));
       assert.equal(upToDateLines.length, SHARD_FLEET_SIZE);
-      assert.match(second.stdout, /Complete/);
+      assert.doesNotMatch(second.stdout, /Already up to date|Complete/);
     });
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
