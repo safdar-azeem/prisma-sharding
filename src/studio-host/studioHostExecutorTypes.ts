@@ -1,5 +1,5 @@
 /**
- * Structural mirror of the `@prisma/studio-core` executor contract.
+ * Structural mirror of the `@prisma-sharding/studio` executor contract.
  *
  * The host runs the real `createPostgresJSExecutor` at runtime. These types
  * exist so the routing, pooling and BFF modules can be typed and unit-tested
@@ -67,7 +67,7 @@ export interface StudioHostSerializedError {
 }
 
 /**
- * Byte-for-byte equivalent of `serializeError` in `@prisma/studio-core/data/bff`.
+ * Byte-for-byte equivalent of `serializeError` in `@prisma-sharding/studio/data/bff`.
  *
  * Reimplemented rather than imported because the BFF entry point is a browser
  * bundle; the contract it defines is what matters, and it is asserted by tests.
