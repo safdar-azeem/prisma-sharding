@@ -200,11 +200,11 @@ test(
     );
 
     try {
-      await waitFor(() => cli.state.stdout.includes(`✅ Studio  http://localhost:${port}`));
+      await waitFor(() => cli.state.stdout.includes(`📦 Studio  http://localhost:${port}`));
 
       const urls = cli.state.stdout.match(/http:\/\/localhost:\d+/g) || [];
       assert.equal(urls.length, 1, 'exactly one URL is printed');
-      assert.match(cli.state.stdout, /2 databases available/);
+      assert.doesNotMatch(cli.state.stdout, /databases available|Prisma Sharding Studio/);
       assert.doesNotMatch(cli.state.stdout, /secret1|secret2/);
 
       const identity = await httpRequest(port, { path: '/api/studio/identity' });
@@ -236,7 +236,7 @@ test(
     );
 
     try {
-      await waitFor(() => cli.state.stdout.includes('✅ Studio'));
+      await waitFor(() => cli.state.stdout.includes('📦 Studio'));
 
       const response = await httpRequest(port, { path: '/api/studio/shards' });
       assert.equal(response.status, 200);
@@ -274,7 +274,7 @@ test(
     );
 
     try {
-      await waitFor(() => cli.state.stdout.includes('✅ Studio'));
+      await waitFor(() => cli.state.stdout.includes('📦 Studio'));
 
       const query = { sql: 'select 1', parameters: [] };
       const post = (body, headers) =>
@@ -340,7 +340,7 @@ test(
     );
 
     try {
-      await waitFor(() => cli.state.stdout.includes(`✅ Studio  http://localhost:${port + 1}`));
+      await waitFor(() => cli.state.stdout.includes(`📦 Studio  http://localhost:${port + 1}`));
       assert.doesNotMatch(cli.state.stdout, /♻️/);
 
       const occupant = await httpRequest(port);
@@ -371,7 +371,7 @@ test(
     const cliA = startCli(shared, projectA);
 
     try {
-      await waitFor(() => cliA.state.stdout.includes(`✅ Studio  http://localhost:${port}`));
+      await waitFor(() => cliA.state.stdout.includes(`📦 Studio  http://localhost:${port}`));
       const entryA = readRegistry(registryDirectory, port);
 
       // Same shard names, same preferred port, different project directory.
@@ -379,7 +379,7 @@ test(
 
       try {
         await waitFor(() =>
-          cliB.state.stdout.includes(`✅ Studio  http://localhost:${port + 1}`)
+          cliB.state.stdout.includes(`📦 Studio  http://localhost:${port + 1}`)
         );
         assert.doesNotMatch(
           cliB.state.stdout,
@@ -427,13 +427,14 @@ test(
     const first = startCli(shared, project);
 
     try {
-      await waitFor(() => first.state.stdout.includes(`✅ Studio  http://localhost:${port}`));
+      await waitFor(() => first.state.stdout.includes(`📦 Studio  http://localhost:${port}`));
       const entry = readRegistry(registryDirectory, port);
 
       const second = startCli(shared, project);
 
       try {
-        await waitFor(() => second.state.stdout.includes(`♻️ Studio  http://localhost:${port}`));
+        await waitFor(() => second.state.stdout.includes(`📦 Studio  http://localhost:${port}`));
+        assert.doesNotMatch(second.state.stdout, /♻️|databases available/);
         assert.equal(
           fs.existsSync(path.join(registryDirectory, `port-${port + 1}.json`)),
           false,
@@ -475,7 +476,7 @@ test(
     );
 
     try {
-      await waitFor(() => first.state.stdout.includes(`✅ Studio  http://localhost:${port}`));
+      await waitFor(() => first.state.stdout.includes(`📦 Studio  http://localhost:${port}`));
 
       // The same project, now configured with a third shard.
       const second = startCli(
@@ -490,10 +491,10 @@ test(
 
       try {
         await waitFor(() =>
-          second.state.stdout.includes(`✅ Studio  http://localhost:${port + 1}`)
+          second.state.stdout.includes(`📦 Studio  http://localhost:${port + 1}`)
         );
-        assert.doesNotMatch(second.state.stdout, /♻️/);
-        assert.match(second.state.stdout, /3 databases available/);
+        assert.doesNotMatch(second.state.stdout, /♻️|databases available/);
+        assert.match(second.state.stdout, new RegExp(`📦 Studio  http://localhost:${port + 1}`));
       } finally {
         await second.stop();
       }
@@ -523,7 +524,7 @@ test(
     );
 
     try {
-      await waitFor(() => cli.state.stdout.includes('✅ Studio'));
+      await waitFor(() => cli.state.stdout.includes('📦 Studio'));
       assert.equal(fs.existsSync(path.join(registryDirectory, `port-${port}.json`)), true);
 
       const exit = await cli.stop();
@@ -600,7 +601,7 @@ test(
     );
 
     try {
-      await waitFor(() => cli.state.stdout.includes('✅ Studio'));
+      await waitFor(() => cli.state.stdout.includes('📦 Studio'));
       assert.match(cli.state.stdout, /1 database available/);
     } finally {
       await cli.stop();
