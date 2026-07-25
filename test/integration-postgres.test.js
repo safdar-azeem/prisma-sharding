@@ -220,8 +220,8 @@ test('legacy db-push shard adopts migrations, keeps data, backfills tickets, and
 
     const updated = await runCli('migrate.js', cliEnv, [], project);
     assert.equal(updated.code, 0, `update failed:\n${updated.stdout}\n${updated.stderr}`);
-    assert.match(updated.stdout, /Baselined 1, 1 migration applied/);
-    assert.match(updated.stdout, /Complete/);
+    assert.match(updated.stdout, /Synced/);
+    assert.doesNotMatch(updated.stdout, /Baselined|1 migration applied|Complete/);
     assert.doesNotMatch(updated.stdout, /db push/i);
 
     // 5. Data preserved and backfilled correctly.
@@ -263,8 +263,8 @@ test('legacy db-push shard adopts migrations, keeps data, backfills tickets, and
     // 6. Rerunning is idempotent: nothing deployed, one concise line per shard.
     const rerun = await runCli('migrate.js', cliEnv, [], project);
     assert.equal(rerun.code, 0, `rerun failed:\n${rerun.stdout}\n${rerun.stderr}`);
-    assert.match(rerun.stdout, /Already up to date/);
-    assert.match(rerun.stdout, /Complete/);
+    assert.match(rerun.stdout, /Synced/);
+    assert.doesNotMatch(rerun.stdout, /Already up to date|Complete/);
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch(() => undefined);
     await admin.end().catch(() => undefined);
