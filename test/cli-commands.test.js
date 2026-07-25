@@ -189,9 +189,9 @@ test('update uses the development push fallback only when no migrations exist', 
 
     assert.equal(result.code, 0);
     assert.match(result.stdout, /✅ client {2}Generated/);
-    assert.match(result.stdout, /development only/);
-    assert.match(result.stdout, /✅ shard_1 {2}Schema synchronised/);
-    assert.match(result.stdout, /✅ shard_2 {2}Schema synchronised/);
+    assert.match(result.stdout, /✅ shard_1 {2}Synced/);
+    assert.match(result.stdout, /✅ shard_2 {2}Synced/);
+    assert.doesNotMatch(result.stdout, /development only|Schema synchronised/);
     assert.doesNotMatch(result.stdout, /NOISY/);
     const commands = readLog(commandLog);
     assert.match(commands, /generate/);
@@ -301,9 +301,9 @@ test('migrate alias runs the shared pipeline without generating the client', asy
     );
 
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /Prisma Sharding Migrate/);
-    assert.match(result.stdout, /✅ shard_1 {2}Schema synchronised/);
-    assert.doesNotMatch(result.stdout, /Generated/);
+    assert.doesNotMatch(result.stdout, /Prisma Sharding Migrate/);
+    assert.match(result.stdout, /✅ shard_1 {2}Synced/);
+    assert.doesNotMatch(result.stdout, /Generated|Schema synchronised/);
     const commands = readLog(commandLog);
     assert.doesNotMatch(commands, /generate/);
     assert.doesNotMatch(commands, /force-reset|accept-data-loss/);
