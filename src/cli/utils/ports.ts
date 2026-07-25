@@ -22,6 +22,15 @@ export interface PrismaStudioProbe {
   isPrismaStudio: boolean;
   host?: string;
   detail: string;
+  /**
+   * Credential-free identity reported by a Prisma Sharding Studio host.
+   *
+   * Present only when the occupant is our own host and answered the identity
+   * endpoint. A port answering with anything else leaves this undefined and is
+   * never treated as reusable.
+   */
+  fingerprint?: string;
+  shardCount?: number;
 }
 
 const LISTEN_CHECK_HOSTS = ['127.0.0.1', '::1', '0.0.0.0', '::'];
@@ -79,33 +88,40 @@ export const getPortUsage = async (port: number): Promise<PortUsage> => {
   };
 };
 
-const responseLooksLikePrismaStudio = (
-  body: string,
-  headers: http.IncomingHttpHeaders
-): boolean => {
-  const headerText = Object.entries(headers)
-    .map(([key, value]) => `${key}:${Array.isArray(value) ? value.join(',') : value || ''}`)
-    .join('\n');
-  const text = `${headerText}\n${body}`.toLowerCase();
-  const hasModernStudioShell =
-    text.includes('window.__studio_config__') &&
-    text.includes('/studio.js') &&
-    text.includes('/studio.css');
-  const hasLegacyStudioShell =
-    text.includes('createstudiobffclient') &&
-    text.includes('/data/bff/index.js') &&
-    text.includes('/ui/index.js') &&
-    text.includes('/adapter.js');
+/**
+ * Path the Studio host answers with its credential-free identity.
+ *
+ * Identity is asserted by the host itself rather than guessed from HTML, so
+ * "is this port one of ours, for this exact project?" has a definitive answer
+ * instead of a heuristic one.
+ */
+export const STUDIO_HOST_IDENTITY_PATH = '/api/studio/identity';
 
-  return (
-    text.includes('prisma studio') ||
-    text.includes('prisma-studio') ||
-    text.includes('@prisma/studio') ||
-    text.includes('prisma.io/studio') ||
-    text.includes('@prisma/studio-core') ||
-    hasModernStudioShell ||
-    hasLegacyStudioShell
-  );
+const STUDIO_HOST_PRODUCT = 'prisma-sharding-studio';
+
+interface StudioHostIdentityResponse {
+  product?: unknown;
+  fingerprint?: unknown;
+  shardCount?: unknown;
+}
+
+const readStudioHostIdentity = (
+  body: string
+): { fingerprint: string; shardCount?: number } | undefined => {
+  try {
+    const parsed = JSON.parse(body) as StudioHostIdentityResponse;
+
+    if (parsed?.product !== STUDIO_HOST_PRODUCT || typeof parsed.fingerprint !== 'string') {
+      return undefined;
+    }
+
+    return {
+      fingerprint: parsed.fingerprint,
+      shardCount: typeof parsed.shardCount === 'number' ? parsed.shardCount : undefined,
+    };
+  } catch {
+    return undefined;
+  }
 };
 
 const probeHttpHost = (
@@ -128,11 +144,11 @@ const probeHttpHost = (
       {
         hostname: host,
         port,
-        path: '/',
+        path: STUDIO_HOST_IDENTITY_PATH,
         method: 'GET',
         timeout: timeoutMs,
         headers: {
-          Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+          Accept: 'application/json',
         },
       },
       (response) => {
@@ -145,12 +161,15 @@ const probeHttpHost = (
         });
 
         response.on('end', () => {
-          const isPrismaStudio = responseLooksLikePrismaStudio(body, response.headers);
+          const identity = readStudioHostIdentity(body);
+
           finish({
             reachable: true,
-            isPrismaStudio,
+            isPrismaStudio: Boolean(identity),
             host,
             detail: `HTTP ${response.statusCode || 'response'}`,
+            fingerprint: identity?.fingerprint,
+            shardCount: identity?.shardCount,
           });
         });
       }
@@ -196,7 +215,7 @@ export const probePrismaStudio = async (
     return {
       ...reachable,
       isPrismaStudio: false,
-      detail: `${reachable.detail}; response did not look like Prisma Studio`,
+      detail: `${reachable.detail}; not a Prisma Sharding Studio host`,
     };
   }
 
