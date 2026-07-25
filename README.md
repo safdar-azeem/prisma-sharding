@@ -197,10 +197,13 @@ SHARD_1_URL=postgresql://user:pass@host:5432/db1
 SHARD_2_URL=postgresql://user:pass@host:5432/db2
 SHARD_3_URL=postgresql://user:pass@host:5432/db3
 SHARD_ROUTING_STRATEGY=modulo  # or consistent-hash
-SHARD_STUDIO_BASE_PORT=51212   # optional, for studio
+SHARD_STUDIO_BASE_PORT=51212   # optional, preferred port for the single Studio host
 SHARD_STUDIO_REUSE_EXISTING=true # optional, defaults to true
 SHARD_STUDIO_STRICT_PORT_CHECK=false # optional, defaults to false
 SHARD_STUDIO_START_TIMEOUT_MS=15000 # optional, defaults to 15000
+SHARD_STUDIO_HOST=127.0.0.1 # optional, interface the Studio host binds to
+SHARD_STUDIO_MAX_OPEN_CONNECTIONS=3 # optional, shards holding a connection at once
+SHARD_STUDIO_IDLE_CONNECTION_TIMEOUT_MS=60000 # optional, idle connection lifetime
 SHARD_STUDIO_VERBOSE=false # optional, defaults to false
 SHARD_CLI_VERBOSE=false # optional, verbose update/migrate output
 PRISMA_SHARDING_VERBOSE=false # optional, library lifecycle logs
@@ -399,100 +402,263 @@ to run with `NODE_ENV=production`. The normal workflow never needs it.
 
 #### `prisma-sharding-studio`
 
-Start Prisma Studio for all shards on sequential ports.
+Open **one** Studio for **all** shards, and switch between them in the UI.
 
 ```bash
 yarn db:studio
 ```
 
-By default, ports are assigned from `SHARD_STUDIO_BASE_PORT`:
-
-```text
-shard_1 -> http://localhost:51212
-shard_2 -> http://localhost:51213
-shard_3 -> http://localhost:51214
-```
-
-Set `SHARD_STUDIO_BASE_PORT` to move the whole range:
-
-```bash
-SHARD_STUDIO_BASE_PORT=52000 yarn db:studio
-# shard_1 -> :52000, shard_2 -> :52001, etc.
-```
-
-Studio is fully project-isolated. Every instance is resolved from the project that ran the
-command — its working directory, `.env`, `prisma.config.*`, schema and shard URLs — and each
-spawned Studio runs with that project as its working directory and receives exactly that
-shard's `DATABASE_URL`. Nothing is resolved from the installed library's own directory.
-
-Reuse is identity-verified, never port-guessed. When the CLI starts a Studio it records a
-credential-free fingerprint (SHA-256 of project root, schema path, shard ID, and the
-database target with credentials stripped) in a per-user registry. An occupied port is only
-reused when that registry entry matches the current project **and** database, the recorded
-process is alive, and the port answers like Prisma Studio:
-
 ```text
 🗄️ Prisma Sharding Studio
 
-♻️ shard_1  http://localhost:51212   ← same project, same database: safe reuse
+✅ Studio  http://localhost:51212
+   3 databases available. Switch between them inside Studio.
 ```
 
-Anything else on the port — another project's Studio, an unknown service — is left
-completely untouched (never reused, never killed) and the CLI automatically starts on the
-next free port, printing the actual assigned URL. Two projects with identical shard names
-can run side by side:
+One command, one URL, one browser tab. The database picker sits in the Studio header;
+every table view, filter, edit, SQL statement, transaction and refresh runs against the
+selected database only.
+
+##### Which databases appear
+
+Discovery uses the same shard parser as every other command, so Studio and `db:update`
+never disagree about what exists:
+
+- `SHARD_COUNT` + `SHARD_N_URL` define the shards.
+- `DATABASE_URL` is used **only** when no shards are configured at all. It is not added as
+  an extra entry when shards exist.
+- Two variables pointing at the same physical database are shown **once**. The folded-away
+  ID still resolves, so an old deep link keeps working.
+- A shard declared by `SHARD_COUNT` but missing its URL is not selectable, and Studio says so.
+
+##### Switching databases
+
+Selecting another database:
+
+1. Re-checks that it is still configured on the server.
+2. Asks you to keep editing or discard, if you have staged inserts or edits.
+3. Cancels in-flight requests for the previous database.
+4. Rebuilds the adapter and clears every connection-bound cache — fetched rows, introspection
+   metadata, in-flight requests and SQL results.
+5. Introspects the newly selected database and updates the shard in the URL.
+
+Data from one shard can never be displayed as another's, even when both databases have
+identical schemas and table names: Studio is remounted with a new adapter, and a response
+that arrives after a switch is discarded rather than applied.
+
+**Where you are is preserved.** Only the `shard` query parameter changes; the view, schema,
+table, filters, sorting and pagination in the URL hash are left untouched, so switching keeps
+you on the same table in the new database:
 
 ```text
-Project A: shard_1 → http://localhost:51212
-Project B: shard_1 → http://localhost:51213   (51212 belonged to Project A)
+http://localhost:51212/?shard=shard_1#view=table&schema=public&table=Appointment
+                       ↓ select Shard 2
+http://localhost:51212/?shard=shard_2#view=table&schema=public&table=Appointment
 ```
 
-Stopping one project's Studio command only stops the processes that command started; other
-projects' Studios and their registry entries are untouched.
+On a homogeneous shard set — the normal case, since every shard runs the same Prisma schema —
+that is exactly what you want when comparing a table across databases. If the new shard
+genuinely lacks the selected schema or table, Studio falls back to the first available one
+rather than showing a broken view.
 
-Default output is intentionally compact:
+Theme, navigation width and page size are presentation preferences and are also preserved.
+
+Refreshing keeps your shard. Two tabs can sit on two different shards without interfering.
+A link naming a shard that has since been removed falls back to the default and tells you.
+Switching uses `replaceState`, so the back button follows your actual path rather than
+stepping back through databases.
+
+##### Security boundary
+
+- Connection strings and credentials are resolved **server-side only** and never reach the
+  browser, the page source or any bundled asset.
+- The browser sends a shard **identifier**; the server resolves it against its own
+  configuration before any query runs.
+- A request carrying an unknown, stale or malformed shard ID is rejected before database
+  execution.
+- A request that tries to supply its own connection URL is rejected outright.
+- The CLI binds to `127.0.0.1`. Set `SHARD_STUDIO_HOST` only if you understand the exposure.
+
+##### Project isolation and reuse
+
+Everything resolves from the project that ran the command — its working directory, `.env`,
+`prisma.config.*`, schema and shard URLs. Nothing resolves from the installed library.
+
+Reuse is identity-verified, never port-guessed. The CLI records a credential-free
+fingerprint (SHA-256 of project root, schema path, and every configured shard ID paired
+with its credential-stripped database target) in a per-user registry. An occupied port is
+reused only when the registry entry matches, the recorded process is alive, **and** the
+host confirms the same fingerprint from its own identity endpoint:
 
 ```text
-🗄️ Prisma Sharding Studio
-
-✅ shard_1  http://localhost:51212
-✅ shard_2  http://localhost:51213
-✅ shard_3  http://localhost:51214
+♻️ Studio  http://localhost:51212   ← same project, same shard set: safe reuse
 ```
 
-Run with `SHARD_STUDIO_VERBOSE=true` to print port checks, masked database URLs, Prisma
-Studio child-process output, startup timings, and detailed failure diagnostics.
+Because the fingerprint covers the whole shard set, adding, removing or repointing a shard
+starts a fresh host instead of attaching to one serving a stale configuration.
 
-Useful Studio environment variables:
+Anything else on the port — another project's host, an unknown service — is left completely
+untouched (never reused, never terminated) and the CLI moves to the next free port:
 
-- `SHARD_STUDIO_BASE_PORT`: first port in the shard Studio range. Defaults to `51212`.
-- `SHARD_STUDIO_REUSE_EXISTING`: reuse already-running Prisma Studio ports. Defaults to `true`.
-- `SHARD_STUDIO_STRICT_PORT_CHECK`: when `true`, any failed shard makes the command exit
-  non-zero after stopping Studio processes started by that run. Defaults to `false`.
-- `SHARD_STUDIO_START_TIMEOUT_MS`: maximum time to wait for a newly spawned Studio to become
-  reachable. Defaults to `15000`.
-- `SHARD_STUDIO_STABILITY_MS`: short window a newly-ready Studio process must survive before
-  it is reported as started. Defaults to `500`.
-- `SHARD_STUDIO_SHUTDOWN_TIMEOUT_MS`: time to wait for owned Studio processes to close during
-  shutdown before sending a force-stop signal. Defaults to `5000`.
-- `SHARD_STUDIO_PORT_SCAN_LIMIT`: how many ports above the preferred one to try when ports
-  are held by other projects or processes. Defaults to `100`.
-- `SHARD_STUDIO_REGISTRY_DIR`: location of the per-user Studio identity registry. Defaults
-  to a `prisma-sharding-studio` directory in the OS temp dir. Entries contain only
-  credential-free fingerprints, ports, pids and project roots.
-- `SHARD_STUDIO_VERBOSE`: print detailed Studio startup diagnostics. Defaults to `false`.
+```text
+Project A → http://localhost:51212
+Project B → http://localhost:51213   (51212 belonged to Project A)
+```
+
+Ctrl+C stops only what the current run started. A reused host and its registry entry are
+left running for the command that owns them. On shutdown the server closes, every open
+database connection is disposed, and no timers or watchers are left behind.
+
+##### Prisma connection-string arguments
+
+Studio connects through `postgres.js` rather than Prisma's engine, and `postgres.js` forwards
+any query parameter it does not recognise to the server as a startup parameter. A stock
+Prisma URL would therefore be refused outright:
+
+```text
+unrecognized configuration parameter "schema"
+```
+
+So Prisma's driver arguments are consumed before the connection is opened:
+
+| Argument                                                            | Handling                                     |
+| ------------------------------------------------------------------- | -------------------------------------------- |
+| `schema`                                                             | Becomes the connection's default `search_path` |
+| `connection_limit`                                                   | Becomes the pool size, capped by the host limit |
+| `host=/var/run/postgresql`                                           | Becomes the unix socket path                  |
+| `application_name`                                                   | Passed as a connection parameter              |
+| `pgbouncer`, `pool_timeout`, `socket_timeout`, `statement_cache_size` | Dropped; they describe Prisma engine behaviour |
+| `sslidentity`, `sslaccept`                                           | Dropped; use `sslcert`/`sslkey`/`sslrootcert` |
+| `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `sslpassword`         | Handled by Studio's own SSL support           |
+| anything else                                                        | Passed through as a genuine PostgreSQL setting |
+
+No change to your `.env` is needed — `?schema=public` keeps working and now also selects the
+default schema inside Studio.
+
+##### Connections
+
+Nothing connects until you actually query a database. Connections are opened lazily per
+shard, reused while you work, bounded by `SHARD_STUDIO_MAX_OPEN_CONNECTIONS`, and closed
+after `SHARD_STUDIO_IDLE_CONNECTION_TIMEOUT_MS` of inactivity. Starting Studio for a
+40-shard project costs one HTTP server and zero database connections.
+
+##### Environment variables
+
+All previous Studio variables still work and now apply to the single host.
+
+- `SHARD_STUDIO_BASE_PORT`: preferred port for the host. Defaults to `51212`. Scanning
+  starts here, exactly as before; shards no longer consume a port each.
+- `SHARD_STUDIO_REUSE_EXISTING`: reuse a running host with a matching identity. Defaults to `true`.
+- `SHARD_STUDIO_STRICT_PORT_CHECK`: when `true`, a host that could not start makes the
+  command exit non-zero. Defaults to `false`.
+- `SHARD_STUDIO_START_TIMEOUT_MS`: maximum time to wait for the host to accept connections.
+  Defaults to `15000`.
+- `SHARD_STUDIO_STABILITY_MS`: window the host must keep listening before it is reported as
+  started. Defaults to `500`.
+- `SHARD_STUDIO_SHUTDOWN_TIMEOUT_MS`: time to wait for the server and its connections to
+  close during shutdown. Defaults to `5000`.
+- `SHARD_STUDIO_PORT_SCAN_LIMIT`: how many ports above the preferred one to try. Defaults to `100`.
+- `SHARD_STUDIO_REGISTRY_DIR`: per-user host identity registry. Defaults to a
+  `prisma-sharding-studio` directory in the OS temp dir. Entries hold only credential-free
+  fingerprints, ports, pids and project roots.
+- `SHARD_STUDIO_HOST`: interface to bind. Defaults to `127.0.0.1`.
+- `SHARD_STUDIO_MAX_OPEN_CONNECTIONS`: shards allowed to hold an open connection at once.
+  Defaults to `3`.
+- `SHARD_STUDIO_IDLE_CONNECTION_TIMEOUT_MS`: how long an unused shard connection is kept.
+  Defaults to `60000`.
+- `SHARD_STUDIO_VERBOSE`: print detailed startup diagnostics. Defaults to `false`.
 - `SHARD_STUDIO_DEBUG`: alias for `SHARD_STUDIO_VERBOSE`.
 
-When the same project runs `db:studio` from multiple terminals, the first run starts the
-Studio processes and later runs reuse them after verifying the identity fingerprint.
-Different projects never share Studio processes, even when they point at the same databases —
-each project gets its own instances on its own ports. Reused-only commands stay quietly
-attached, preventing process supervisors from printing a normal child-exit message. Pressing
-Ctrl+C only stops Studio processes started by the current CLI run; reused processes are left running.
+##### Embedding Studio in your own application
 
-If you run Studio beside `nodemon`, prefer an explicit watch scope for the API process. Prisma
-Studio does not need to write to your app source, but broad nodemon defaults can restart on
-generated TypeScript or JSON files produced by other dev tooling:
+The CLI is just one embedder. The same discovery, validation, routing and execution
+services can be mounted behind your app's own authenticated route:
+
+```typescript
+import { createServer } from 'node:http';
+import {
+  createStudioHostPostgresConnectionFactory,
+  createStudioHostRequestHandler,
+  createStudioHostService,
+} from 'prisma-sharding/studio-host';
+
+const studio = createStudioHostService({
+  createConnection: createStudioHostPostgresConnectionFactory(),
+  // REQUIRED for any network-reachable endpoint. Without it every caller that
+  // can reach the route can read and write every configured database.
+  authorize: async ({ auth, shardId }) => {
+    const session = auth as Session | undefined;
+
+    if (!session?.isAdmin) {
+      return { allowed: false, status: 401, message: 'Sign in required' };
+    }
+
+    return session.allowedShardIds.includes(shardId);
+  },
+});
+
+const handleStudio = createStudioHostRequestHandler({
+  service: studio,
+  createContext: (request) => ({
+    headers: request.headers,
+    auth: getSessionFromRequest(request),
+  }),
+});
+
+createServer(async (request, response) => {
+  const url = new URL(request.url ?? '/', 'http://localhost');
+
+  if (url.pathname.startsWith('/internal/studio')) {
+    const handled = await handleStudio(
+      request,
+      response,
+      url.pathname.slice('/internal/studio'.length) || '/'
+    );
+
+    if (handled) {
+      return;
+    }
+  }
+
+  // ... your own routes
+});
+
+// On shutdown, so no pool outlives the process.
+process.on('SIGTERM', () => void studio.dispose());
+```
+
+Routes, relative to your mount path:
+
+| Route            | Method | Purpose                                             |
+| ---------------- | ------ | --------------------------------------------------- |
+| `/shards`        | GET    | Sanitized, credential-free list of databases         |
+| `/shards/status` | POST   | On-demand availability check for one shard           |
+| `/bff`           | POST   | Studio BFF: query, sequence, transaction, sql-lint   |
+| `/identity`      | GET    | Credential-free host identity, used for safe reuse   |
+
+Responsibilities split cleanly: **you** own routing, authentication, tenancy and TLS.
+**Prisma Sharding** owns shard discovery, identifier validation, credential resolution,
+connection routing and lifecycle. **Studio** owns the UI, adapters, introspection and the
+BFF contract.
+
+##### Troubleshooting
+
+- **`unrecognized configuration parameter "..."`.** A connection-string argument reached the
+  server as a startup parameter. Prisma's own arguments are translated automatically (see
+  above); if you hit this with a custom argument, remove it from the URL.
+- **A database shows as unreachable.** Only that entry is affected; the others stay usable.
+  Re-select it to retry. Run with `SHARD_STUDIO_VERBOSE=true` for the underlying error
+  class — connection strings are never printed.
+- **A database is missing from the list.** Its `SHARD_N_URL` is unset, or it points at the
+  same physical database as another shard and was folded into it. Both cases are reported
+  in Studio.
+- **The picker is above Studio rather than in its header.** The installed
+  `@prisma/studio-core` predates the host extension points. Upgrade it to move the picker
+  into the header and re-enable the unsaved-edits guard.
+- **A port other than 51212.** The preferred port was taken by something the CLI refused to
+  disturb. The printed URL is always the real one.
+
+If you run Studio beside `nodemon`, prefer an explicit watch scope for the API process:
 
 ```bash
 nodemon --watch src --ext ts,json \
