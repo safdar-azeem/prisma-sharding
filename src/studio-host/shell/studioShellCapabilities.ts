@@ -1,7 +1,7 @@
-import * as studioUi from '@prisma/studio-core/ui';
+import * as studioUi from '@prisma-sharding/studio/ui';
 
 /**
- * What the installed `@prisma/studio-core` build actually supports.
+ * What the installed `@prisma-sharding/studio` build actually supports.
  *
  * The host renders its shard selector into Studio's generic `headerEndContent`
  * slot and relies on `onPendingChangesChange` to know when switching would
@@ -32,6 +32,6 @@ export const detectStudioShellCapabilities = (
 };
 
 export const STUDIO_SHELL_LEGACY_CORE_NOTICE =
-  'This @prisma/studio-core build predates the Studio host extension points, so the ' +
+  'This @prisma-sharding/studio build predates the Studio host extension points, so the ' +
   'database selector is shown above Studio and unsaved edits are not detected before ' +
-  'switching. Upgrade @prisma/studio-core to restore both.';
+  'switching. Upgrade @prisma-sharding/studio to restore both.';
