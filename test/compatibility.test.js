@@ -46,6 +46,20 @@ test('package entry points, CLI names, and existing exports remain compatible', 
   assert.equal(packageJson.types, 'dist/index.d.ts');
   assert.deepEqual(packageJson.bin, EXPECTED_BINARIES);
 
+  // The root import must keep resolving exactly as before now that a second
+  // subpath exists, so `require('prisma-sharding')` is unaffected by the
+  // Studio host being published alongside it.
+  assert.deepEqual(packageJson.exports['.'], {
+    types: './dist/index.d.ts',
+    import: './dist/index.mjs',
+    require: './dist/index.js',
+  });
+  assert.deepEqual(packageJson.exports['./studio-host'], {
+    types: './dist/studio-host/index.d.ts',
+    import: './dist/studio-host/index.mjs',
+    require: './dist/studio-host/index.js',
+  });
+
   assert.deepEqual(Object.keys(library).sort(), [
     'ConfigError',
     'ConnectionError',
