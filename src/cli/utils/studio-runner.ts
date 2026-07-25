@@ -184,7 +184,6 @@ const startOwnHost = async (
 };
 
 const printFailure = (options: StudioOptions, lastError?: Error): void => {
-  console.log('🗄️ Prisma Sharding Studio\n');
   console.log(
     `❌ Studio  ${
       lastError
@@ -206,24 +205,22 @@ const printFailure = (options: StudioOptions, lastError?: Error): void => {
   console.log('\nRun with SHARD_STUDIO_VERBOSE=true for details.');
 };
 
-/** One URL, plus one line about how many databases it serves. */
+/** One URL in normal mode; database counts and reuse diagnostics stay verbose-only. */
 const printResult = (shardCount: number, options: StudioOptions): void => {
   if (!startedHost) {
     return;
   }
 
-  const icon = startedHost.reused ? '♻️' : '✅';
-  const databases = `${shardCount} ${shardCount === 1 ? 'database' : 'databases'}`;
-
-  console.log('🗄️ Prisma Sharding Studio\n');
-  console.log(`${icon} Studio  ${startedHost.url}`);
-  console.log(`   ${databases} available. Switch between them inside Studio.`);
+  console.log(`📦 Studio  ${startedHost.url}`);
 
   if (!options.verbose) {
     return;
   }
 
+  const databases = `${shardCount} ${shardCount === 1 ? 'database' : 'databases'}`;
+
   console.log('\nVerbose details:');
+  console.log(`   ${databases} available. Switch between them inside Studio.`);
   console.log(`   Base port: ${options.basePort}`);
   console.log(`   Bound interface: ${options.bindHost}`);
   console.log(`   Reuse existing host: ${options.reuseExisting ? 'yes' : 'no'}`);
@@ -238,8 +235,7 @@ const startStudioHost = async (options: StudioOptions): Promise<boolean> => {
   const targetsResult = resolveStudioHostTargets();
 
   if (targetsResult.targets.length === 0) {
-    console.log('🗄️ Prisma Sharding Studio\n');
-    console.error(`❌ ${NO_STUDIO_TARGETS_MESSAGE}`);
+    console.error(`❌ Studio  ${NO_STUDIO_TARGETS_MESSAGE}`);
     process.exit(1);
   }
 
