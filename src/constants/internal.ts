@@ -14,4 +14,11 @@ export const INTERNAL_DEFAULTS = {
   STUDIO_STABILITY_MS: 500,
   STUDIO_SHUTDOWN_TIMEOUT_MS: 5000,
   STUDIO_PORT_SCAN_LIMIT: 100,
+  /**
+   * Studio queries one shard at a time. A small bound keeps a project with
+   * many shards from accumulating a connection pool per database while still
+   * making a switch back to a recent shard instant.
+   */
+  STUDIO_MAX_OPEN_CONNECTIONS: 3,
+  STUDIO_IDLE_CONNECTION_TIMEOUT_MS: 60000,
 } as const;
