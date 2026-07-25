@@ -39,7 +39,7 @@
   "scripts": {
     "build": "yarn build:lib && yarn build:cli",
     "build:lib": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "build:cli": "tsup src/cli/update.ts src/cli/migrate.ts src/cli/baseline.ts src/cli/push.ts src/cli/studio.ts src/cli/test.ts src/cli/utils/command.ts src/cli/utils/postgres.ts src/cli/utils/pipeline.ts src/cli/utils/update-cli.ts src/cli/utils/baseline-core.ts src/cli/utils/config.ts src/cli/utils/shards.ts src/cli/utils/migrations.ts src/cli/utils/migration-state.ts src/cli/utils/introspect.ts src/cli/utils/unsafe-push.ts src/cli/utils/prisma.ts --format cjs --outDir dist/cli --clean",
+    "build:cli": "tsup src/cli/update.ts src/cli/migrate.ts src/cli/baseline.ts src/cli/push.ts src/cli/studio.ts src/cli/test.ts src/cli/utils/command.ts src/cli/utils/postgres.ts src/cli/utils/pipeline.ts src/cli/utils/update-cli.ts src/cli/utils/baseline-core.ts src/cli/utils/config.ts src/cli/utils/studio-registry.ts src/cli/utils/shards.ts src/cli/utils/migrations.ts src/cli/utils/migration-state.ts src/cli/utils/introspect.ts src/cli/utils/unsafe-push.ts src/cli/utils/prisma.ts --format cjs --outDir dist/cli --clean",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "test": "yarn build && node --test test/*.test.js",
