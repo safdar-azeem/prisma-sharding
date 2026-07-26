@@ -177,7 +177,7 @@ One script is all developers need. Add to your `package.json`:
 {
   "scripts": {
     "db:update": "prisma-sharding-update",
-    "db:studio": "prisma-sharding-studio",
+    "db:studio": "prisma-studio-next",
     "test:shards": "prisma-sharding-test"
   }
 }
@@ -400,7 +400,7 @@ A deliberate escape hatch for a disposable local database only. It bypasses migr
 history, so it is blocked unless `SHARD_ALLOW_UNSAFE_PUSH=true` is set, and always refuses
 to run with `NODE_ENV=production`. The normal workflow never needs it.
 
-#### `prisma-sharding-studio`
+#### `prisma-studio-next`
 
 Open **one** Studio for **all** shards, and switch between them in the UI.
 
@@ -510,13 +510,13 @@ database connection is disposed, and no timers or watchers are left behind.
 
 ##### The Studio package
 
-Studio's UI, adapters and BFF contract come from `@prisma-sharding/studio`, published under
-the same `prisma-sharding` npm organisation as this package:
+Studio's UI, adapters and BFF contract come from `prisma-studio-next`, published to npm
+alongside this package:
 
-| Package                    | Role                                                        |
-| -------------------------- | ----------------------------------------------------------- |
-| `prisma-sharding`          | Sharding library, CLI, and the Studio host                   |
-| `@prisma-sharding/studio`  | The embedded Studio UI, adapters and BFF contract            |
+| Package               | Role                                              |
+| --------------------- | ------------------------------------------------- |
+| `prisma-sharding`     | Sharding library, CLI, and the Studio host        |
+| `prisma-studio-next`  | The embedded Studio UI, adapters and BFF contract |
 
 It is a fork of Prisma's `@prisma/studio-core`, renamed so it is never published under or
 confused with the official package. It carries the two generic host extension points this
@@ -533,7 +533,7 @@ To develop against a local checkout of the fork rather than a published version:
 pnpm build && pnpm link --global
 
 # in prisma-sharding
-yarn link @prisma-sharding/studio
+yarn link prisma-studio-next
 ```
 
 ##### Grouping the table list
@@ -617,7 +617,7 @@ All previous Studio variables still work and now apply to the single host.
   close during shutdown. Defaults to `5000`.
 - `SHARD_STUDIO_PORT_SCAN_LIMIT`: how many ports above the preferred one to try. Defaults to `100`.
 - `SHARD_STUDIO_REGISTRY_DIR`: per-user host identity registry. Defaults to a
-  `prisma-sharding-studio` directory in the OS temp dir. Entries hold only credential-free
+  `prisma-studio-next` directory in the OS temp dir. Entries hold only credential-free
   fingerprints, ports, pids and project roots.
 - `SHARD_STUDIO_HOST`: interface to bind. Defaults to `127.0.0.1`.
 - `SHARD_STUDIO_MAX_OPEN_CONNECTIONS`: shards allowed to hold an open connection at once.
@@ -713,7 +713,7 @@ BFF contract.
   same physical database as another shard and was folded into it. Both cases are reported
   in Studio.
 - **The picker is above Studio rather than in its header.** The installed
-  `@prisma-sharding/studio` predates the host extension points. Upgrade it to move the picker
+  `prisma-studio-next` predates the host extension points. Upgrade it to move the picker
   into the header and re-enable the unsaved-edits guard.
 - **A port other than 51212.** The preferred port was taken by something the CLI refused to
   disturb. The printed URL is always the real one.
