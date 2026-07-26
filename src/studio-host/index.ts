@@ -48,6 +48,7 @@ export {
   buildStudioShardManifest,
   type StudioShardManifest,
   type StudioShardManifestEntry,
+  type StudioShardManifestUi,
   type StudioShardStatus,
 } from './studioHostManifest';
 
