@@ -14,6 +14,7 @@ import {
   assertStudioShardManifestIsSafe,
   buildStudioShardManifest,
   StudioShardManifest,
+  StudioShardManifestUi,
   StudioShardStatus,
 } from './studioHostManifest';
 import {
@@ -80,6 +81,8 @@ export interface StudioHostServiceOptions {
   maxOpenConnections?: number;
   idleTimeoutMs?: number;
   logger?: StudioHostLogger;
+  /** Presentation preferences forwarded to Studio in the manifest. */
+  ui?: Partial<StudioShardManifestUi>;
 }
 
 export interface StudioHostService {
@@ -174,6 +177,7 @@ export const createStudioHostService = (
     maxOpenConnections,
     idleTimeoutMs,
     logger,
+    ui,
   } = options;
 
   const targetsResult = resolveStudioHostTargets(env);
@@ -201,7 +205,7 @@ export const createStudioHostService = (
   const statusById: Record<string, { status: StudioShardStatus; message?: string }> = {};
 
   const buildManifest = (): StudioShardManifest => {
-    const manifest = buildStudioShardManifest(targetsResult, { statusById });
+    const manifest = buildStudioShardManifest(targetsResult, { statusById, ui });
     // The manifest is the only shard-derived payload the browser receives.
     assertStudioShardManifestIsSafe(manifest, targets);
     return manifest;
