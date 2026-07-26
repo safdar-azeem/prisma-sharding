@@ -301,6 +301,7 @@ const startStudioHost = async (options: StudioOptions): Promise<boolean> => {
         maxOpenConnections: options.maxOpenConnections,
         idleTimeoutMs: options.idleConnectionTimeoutMs,
         createConnection: createStudioHostPostgresConnectionFactory(),
+        ui: { tableGrouping: options.tableGrouping },
         logger: {
           info: (message) => logVerbose(options, `   ${message}`),
           warn: (message) => logVerbose(options, `   ${message}`, console.warn),
