@@ -9,7 +9,7 @@ import type { Executor } from './studioHostExecutorTypes';
  * receives it from server-owned configuration exclusively. Everything above it
  * addresses databases by shard ID.
  *
- * The executor itself comes from `@prisma-sharding/studio`; the host does not
+ * The executor itself comes from `prisma-studio-next`; the host does not
  * reimplement query execution, transactions, cancellation or SQL linting.
  */
 
@@ -25,7 +25,7 @@ interface PostgresSql {
 interface StudioCorePostgresJsModule {
   createPostgresJSExecutor(sql: PostgresSql): Executor;
   /**
-   * Present in newer `@prisma-sharding/studio` releases. When absent the
+   * Present in newer `prisma-studio-next` releases. When absent the
    * connection string is handed to postgres.js unchanged, which is exactly the
    * pre-existing behaviour for URLs without client-side SSL file parameters.
    */
@@ -66,7 +66,7 @@ export const createStudioHostPostgresConnectionFactory = (
     loadPostgres = () => require('postgres') as PostgresJsModule,
     loadStudioCore = () =>
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      require('@prisma-sharding/studio/data/postgresjs') as StudioCorePostgresJsModule,
+      require('prisma-studio-next/data/postgresjs') as StudioCorePostgresJsModule,
   } = options;
 
   return async (target) => {
