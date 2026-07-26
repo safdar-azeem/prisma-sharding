@@ -1,13 +1,13 @@
 /*
  * Host chrome for the Prisma Sharding Studio shell.
  *
- * Everything here is expressed with the design tokens `@prisma-sharding/studio`
+ * Everything here is expressed with the design tokens `prisma-studio-next`
  * publishes on :root and .dark, so the shard selector inherits Studio's theme,
  * radius and focus treatment automatically, in both colour schemes, without
  * duplicating any of its component styles.
  */
 
-@import "@prisma-sharding/studio/ui/index.css";
+@import "prisma-studio-next/ui/index.css";
 
 html,
 body,
@@ -60,7 +60,7 @@ body,
 }
 
 /*
- * Only rendered against a @prisma-sharding/studio build without the host header
+ * Only rendered against a prisma-studio-next build without the host header
  * slot. It keeps the selector reachable rather than leaving no way to switch
  * databases at all.
  */
