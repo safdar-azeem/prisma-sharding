@@ -2,7 +2,7 @@
  * Public surface of the Prisma Sharding Studio host.
  *
  * Consuming applications import from here to mount the exact same shard-aware
- * Studio service the `prisma-sharding-studio` command runs, behind their own
+ * Studio service the `prisma-studio-next` command runs, behind their own
  * authenticated route. There is one implementation: the CLI is just another
  * embedder.
  */
