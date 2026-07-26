@@ -209,7 +209,7 @@ test(
 
       const identity = await httpRequest(port, { path: '/api/studio/identity' });
       assert.equal(identity.status, 200);
-      assert.equal(JSON.parse(identity.body).product, 'prisma-sharding-studio');
+      assert.equal(JSON.parse(identity.body).product, 'prisma-studio-next');
       assert.equal(JSON.parse(identity.body).shardCount, 2);
     } finally {
       await cli.stop();
