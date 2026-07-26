@@ -42,7 +42,7 @@ export const getStudioRegistryDirectory = (
   env: NodeJS.ProcessEnv = process.env
 ): string =>
   env.SHARD_STUDIO_REGISTRY_DIR?.trim() ||
-  path.join(os.tmpdir(), 'prisma-sharding-studio');
+  path.join(os.tmpdir(), 'prisma-studio-next');
 
 const entryPath = (directory: string, port: number): string =>
   path.join(directory, `port-${port}.json`);
