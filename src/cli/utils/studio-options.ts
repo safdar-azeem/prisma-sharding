@@ -33,6 +33,13 @@ export interface StudioOptions {
   maxOpenConnections: number;
   /** How long an unused shard connection is kept before it is closed. */
   idleConnectionTimeoutMs: number;
+  /**
+   * Group the navigation table list by detected table-name prefix.
+   *
+   * A single switch: Studio derives the groups from the schema's own table
+   * names, so no prefixes, labels or rules are configured here.
+   */
+  tableGrouping: boolean;
 }
 
 export const getStudioOptions = (
@@ -84,6 +91,11 @@ export const getStudioOptions = (
   idleConnectionTimeoutMs: parsePositiveIntegerEnv(
     'SHARD_STUDIO_IDLE_CONNECTION_TIMEOUT_MS',
     INTERNAL_DEFAULTS.STUDIO_IDLE_CONNECTION_TIMEOUT_MS,
+    env
+  ),
+  tableGrouping: parseBooleanEnv(
+    'SHARD_STUDIO_TABLE_GROUPING',
+    INTERNAL_DEFAULTS.STUDIO_TABLE_GROUPING,
     env
   ),
 });
