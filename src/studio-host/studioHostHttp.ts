@@ -130,7 +130,7 @@ export const createStudioHostRequestHandler = (
       // Credential-free identity, used by the CLI to prove that an occupied
       // port belongs to this exact project before reusing it.
       sendJson(response, 200, {
-        product: 'prisma-sharding-studio',
+        product: 'prisma-studio-next',
         fingerprint: service.fingerprint,
         shardCount: service.targets.length,
       });
