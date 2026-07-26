@@ -1,5 +1,5 @@
-import { createStudioBFFClient } from '@prisma-sharding/studio/data/bff';
-import { createPostgresAdapter } from '@prisma-sharding/studio/data/postgres-core';
+import { createStudioBFFClient } from 'prisma-studio-next/data/bff';
+import { createPostgresAdapter } from 'prisma-studio-next/data/postgres-core';
 import { STUDIO_SHELL_BFF_URL } from './studioShellApi';
 
 /**
