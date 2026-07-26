@@ -204,6 +204,7 @@ SHARD_STUDIO_START_TIMEOUT_MS=15000 # optional, defaults to 15000
 SHARD_STUDIO_HOST=127.0.0.1 # optional, interface the Studio host binds to
 SHARD_STUDIO_MAX_OPEN_CONNECTIONS=3 # optional, shards holding a connection at once
 SHARD_STUDIO_IDLE_CONNECTION_TIMEOUT_MS=60000 # optional, idle connection lifetime
+SHARD_STUDIO_TABLE_GROUPING=false # optional, group the sidebar table list by prefix
 SHARD_STUDIO_VERBOSE=false # optional, defaults to false
 SHARD_CLI_VERBOSE=false # optional, verbose update/migrate output
 PRISMA_SHARDING_VERBOSE=false # optional, library lifecycle logs
@@ -535,6 +536,37 @@ pnpm build && pnpm link --global
 yarn link @prisma-sharding/studio
 ```
 
+##### Grouping the table list
+
+Schemas with hundreds of tables produce a very long flat sidebar. Set one variable to have
+Studio organise it into expandable groups:
+
+```bash
+SHARD_STUDIO_TABLE_GROUPING=true
+```
+
+That is the whole configuration. Studio reads your actual table names and groups the ones
+sharing a leading word:
+
+```text
+Accounting (10)   AccountingAsset, AccountingConfig, AccountingVoucher, …
+Crm (3)           CrmCall, CrmContact, CrmCustomer
+Hrm (3)           HrmAttendance, HrmEmployee, HrmPayroll
+Product (3)       _ProductPurchaseTaxes, _ProductSalesTaxes, _ProductToCategory
+Other (7)         ActivityLog, Appointment, Conversation, _prisma_migrations, …
+```
+
+Nothing is listed, mapped or maintained by hand, and no prefixes are built into the library:
+groups come from the names in your schema, and labels use the casing you wrote, so
+`HRMEmployee` shows `HRM` and `hrm_employee` shows `Hrm`. A project with entirely different
+conventions groups just as well.
+
+- Tables with no shared prefix are collected under `Other`. Nothing is hidden.
+- A schema with no repeated prefixes stays flat instead of gaining a pointless wrapper.
+- Searching returns the flat filtered list, so a result is never inside a collapsed group.
+- Collapse state persists, and the group holding the open table is always expanded.
+- Leave the variable unset and the sidebar behaves exactly as before.
+
 ##### Prisma connection-string arguments
 
 Studio connects through `postgres.js` rather than Prisma's engine, and `postgres.js` forwards
@@ -592,6 +624,8 @@ All previous Studio variables still work and now apply to the single host.
   Defaults to `3`.
 - `SHARD_STUDIO_IDLE_CONNECTION_TIMEOUT_MS`: how long an unused shard connection is kept.
   Defaults to `60000`.
+- `SHARD_STUDIO_TABLE_GROUPING`: group the sidebar table list by detected prefix. Defaults
+  to `false`. See below.
 - `SHARD_STUDIO_VERBOSE`: print detailed startup diagnostics. Defaults to `false`.
 - `SHARD_STUDIO_DEBUG`: alias for `SHARD_STUDIO_VERBOSE`.
 
