@@ -5,7 +5,7 @@ import { StudioHostTarget } from './studioHostTargets';
  * Creates the database client and Studio executor for one shard.
  *
  * Injected so the pool can be exercised without a real database, and so the
- * `postgres` / `@prisma-sharding/studio` imports stay at the edge of the host.
+ * `postgres` / `prisma-studio-next` imports stay at the edge of the host.
  */
 export type StudioHostConnectionFactory = (target: StudioHostTarget) => Promise<{
   executor: Executor;
