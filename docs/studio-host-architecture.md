@@ -101,6 +101,12 @@ reaches a connection.
 | `studioShellUnsavedChangesDialog.tsx` | Keep-editing / discard confirmation                      |
 | `studioShellUrlState.ts`            | Shard in the query string, Studio state in the hash        |
 | `studioShellCapabilities.ts`        | Degrades honestly on a studio-core without the extensions  |
+| `studioShellDocument.html`          | Shell document; links `/favicon.ico` for the Studio tab    |
+| `favicon.ico`                       | Vendored Studio tab icon shipped with this package         |
+
+`scripts/buildStudioHostAssets.mjs` copies `src/studio-host/shell/favicon.ico` into
+`dist/studio-host-assets/favicon.ico` at package build time. The published CLI therefore
+serves the Studio icon automatically; consumers do not configure a favicon themselves.
 
 ## Design decisions worth knowing
 
