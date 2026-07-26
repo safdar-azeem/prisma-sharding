@@ -313,6 +313,7 @@ export function StudioShellApp() {
           onPendingChangesChange={
             capabilities.hasPendingChangesReporting ? setPendingChanges : undefined
           }
+          tableGrouping={loadState.manifest.ui?.tableGrouping === true}
         />
       </div>
 
