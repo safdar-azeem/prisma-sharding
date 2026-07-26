@@ -21,6 +21,22 @@ export interface StudioShardManifestEntry {
   sources: string[];
 }
 
+/**
+ * Presentation settings the host passes to Studio.
+ *
+ * Project preferences, not shard data: they describe how the UI should behave,
+ * carry nothing derived from a connection, and are safe for the browser.
+ */
+export interface StudioShardManifestUi {
+  /**
+   * Group the navigation table list by detected name prefix.
+   *
+   * A single switch. Studio derives the groups from the schema's own table
+   * names, so nothing about the project's domains is configured here.
+   */
+  tableGrouping: boolean;
+}
+
 export interface StudioShardManifest {
   version: 1;
   /** Shard selected when the browser expresses no valid preference. */
@@ -28,6 +44,7 @@ export interface StudioShardManifest {
   shards: StudioShardManifestEntry[];
   /** Sanitized configuration notices, safe to render in the UI. */
   warnings: string[];
+  ui: StudioShardManifestUi;
 }
 
 /** Names that must never be echoed back, even as bare names. */
@@ -55,13 +72,15 @@ const sanitizeLabel = (label: string): string => {
 export interface BuildStudioShardManifestOptions {
   /** Per-shard status, when the host has probed connectivity. */
   statusById?: Readonly<Record<string, { status: StudioShardStatus; message?: string }>>;
+  /** UI preferences resolved from project configuration. */
+  ui?: Partial<StudioShardManifestUi>;
 }
 
 export const buildStudioShardManifest = (
   result: StudioHostTargetsResult,
   options: BuildStudioShardManifestOptions = {}
 ): StudioShardManifest => {
-  const { statusById = {} } = options;
+  const { statusById = {}, ui = {} } = options;
 
   const shards = result.targets.map((target) => {
     const status = statusById[target.id];
@@ -107,6 +126,7 @@ export const buildStudioShardManifest = (
     defaultShardId: shards[0]?.id ?? null,
     shards,
     warnings,
+    ui: { tableGrouping: ui.tableGrouping === true },
   };
 };
 
