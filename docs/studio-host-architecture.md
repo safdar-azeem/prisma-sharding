@@ -1,12 +1,12 @@
 # Studio Host Architecture
 
-How `prisma-sharding` and `@prisma-sharding/studio` combine into one Studio that serves every
+How `prisma-sharding` and `prisma-studio-next` combine into one Studio that serves every
 configured shard.
 
 ## The problem this replaces
 
-The previous `prisma-sharding-studio` spawned one `npx prisma studio` child process per
-shard, on sequential ports. Three shards meant three processes, three ports, three browser
+The previous version of the `prisma-studio-next` command spawned one `npx prisma studio`
+child process per shard, on sequential ports. Three shards meant three processes, three ports, three browser
 tabs, and no way to tell at a glance which tab was pointed at which database. Comparing two
 shards meant window management; a stale tab looked identical to a live one.
 
@@ -14,8 +14,8 @@ shards meant window management; a stale tab looked identical to a live one.
 
 The split is strict, and it is what keeps the two packages independently maintainable.
 
-`@prisma-sharding/studio` is a rename of Prisma's `@prisma/studio-core`, published under our
-own scope so it is never confused with, or published over, the official package. The rename
+`prisma-studio-next` is a rename of Prisma's `@prisma/studio-core`, published under its own
+name so it is never confused with, or published over, the official package. The rename
 carries no behavioural change; the fork exists only to host the generic extension points
 listed below. Upstream attribution is preserved in that package's `NOTICE` and `LICENSE`.
 
@@ -25,17 +25,17 @@ listed below. Upstream attribution is preserved in that package's `NOTICE` and `
 | Shard identifier validation, credential resolution, routing     | `prisma-sharding`         |
 | Project identity, host lifecycle, port scanning, process reuse  | `prisma-sharding`         |
 | CLI integration and the browser shell around Studio             | `prisma-sharding`         |
-| Studio UI, adapters, introspection, table editor, SQL tools     | `@prisma-sharding/studio` |
-| BFF contract, executor contract, serialized error contract      | `@prisma-sharding/studio` |
+| Studio UI, adapters, introspection, table editor, SQL tools     | `prisma-studio-next` |
+| BFF contract, executor contract, serialized error contract      | `prisma-studio-next` |
 | Routing, authentication, tenancy for an embedded deployment     | the consuming host        |
 
-`@prisma-sharding/studio` stays database-agnostic and sharding-agnostic. It has no dependency on
+`prisma-studio-next` stays database-agnostic and sharding-agnostic. It has no dependency on
 `prisma-sharding` and no knowledge that shards exist. `prisma-sharding` consumes only public
-`@prisma-sharding/studio` exports and copies none of its source.
+`prisma-studio-next` exports and copies none of its source.
 
 ## Studio extension points used
 
-Two additive, generic APIs were added to `@prisma-sharding/studio`. Neither mentions sharding,
+Two additive, generic APIs were added to `prisma-studio-next`. Neither mentions sharding,
 and both are useful to any embedder that owns connection selection or navigation:
 
 - `StudioProps.headerEndContent` — an opaque `ReactNode` rendered at the end of every Studio
