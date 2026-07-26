@@ -596,13 +596,21 @@ test(
         SHARD_STUDIO_BASE_PORT: String(port),
         SHARD_COUNT: '1',
         SHARD_2_URL: undefined,
+        // The database count only appears in verbose output; the default is
+        // deliberately just the URL.
+        SHARD_STUDIO_VERBOSE: 'true',
       },
       project
     );
 
     try {
       await waitFor(() => cli.state.stdout.includes('📦 Studio'));
-      assert.match(cli.state.stdout, /1 database available/);
+      assert.match(
+        cli.state.stdout,
+        /1 database available/,
+        'a single shard is described in the singular'
+      );
+      assert.doesNotMatch(cli.state.stdout, /1 databases/);
     } finally {
       await cli.stop();
       fs.rmSync(registryDirectory, { recursive: true, force: true });
