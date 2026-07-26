@@ -245,23 +245,6 @@
     "@nodelib/fs.scandir" "2.1.5"
     fastq "^1.6.0"
 
-"@prisma-sharding/studio@0.0.3":
-  version "0.0.3"
-  resolved "https://registry.yarnpkg.com/@prisma-sharding/studio/-/studio-0.0.3.tgz#a013694b4cd064969ee73a3453db7925a4b226c0"
-  integrity sha512-3deCCA9qybKJeclcbX41h4mDnEAlGEDNKQDDEuiVYRCPD/uHi9WNfPrJVmW8HJpWjOvpgfXsqjpg7tMjURUI8A==
-  dependencies:
-    "@radix-ui/react-toggle" "1.1.10"
-    "@visx/curve" "4.0.1-alpha.0"
-    "@visx/event" "4.0.1-alpha.0"
-    "@visx/grid" "4.0.1-alpha.0"
-    "@visx/group" "4.0.1-alpha.0"
-    "@visx/responsive" "4.0.1-alpha.0"
-    "@visx/scale" "4.0.1-alpha.0"
-    "@visx/shape" "4.0.1-alpha.0"
-    d3-array "3.2.4"
-    d3-shape "3.2.0"
-    elkjs "0.11.1"
-
 "@prisma/config@7.9.0":
   version "7.9.0"
   resolved "https://registry.yarnpkg.com/@prisma/config/-/config-7.9.0.tgz#ee59dd6a381db9048addfba67f6f98d955d42e81"
@@ -2084,6 +2067,23 @@ prelude-ls@^1.2.1:
   version "1.2.1"
   resolved "https://registry.yarnpkg.com/prelude-ls/-/prelude-ls-1.2.1.tgz#debc6489d7a6e6b0e7611888cec880337d316396"
   integrity sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==
+
+prisma-studio-next@0.0.1:
+  version "0.0.1"
+  resolved "https://registry.yarnpkg.com/prisma-studio-next/-/prisma-studio-next-0.0.1.tgz#9fb5ab97a273f7f5c58fbbc34947e3da000aee3a"
+  integrity sha512-wBnpWX90buCX6INuPZRqjB8Asmo1aJvFpyWprf4bvtihaheAJozBADQpj337Wo8Ms+ERguf2Gua409dNluESog==
+  dependencies:
+    "@radix-ui/react-toggle" "1.1.10"
+    "@visx/curve" "4.0.1-alpha.0"
+    "@visx/event" "4.0.1-alpha.0"
+    "@visx/grid" "4.0.1-alpha.0"
+    "@visx/group" "4.0.1-alpha.0"
+    "@visx/responsive" "4.0.1-alpha.0"
+    "@visx/scale" "4.0.1-alpha.0"
+    "@visx/shape" "4.0.1-alpha.0"
+    d3-array "3.2.4"
+    d3-shape "3.2.0"
+    elkjs "0.11.1"
 
 prisma@^7.3.0:
   version "7.9.0"
