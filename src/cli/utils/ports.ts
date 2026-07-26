@@ -97,7 +97,7 @@ export const getPortUsage = async (port: number): Promise<PortUsage> => {
  */
 export const STUDIO_HOST_IDENTITY_PATH = '/api/studio/identity';
 
-const STUDIO_HOST_PRODUCT = 'prisma-sharding-studio';
+const STUDIO_HOST_PRODUCT = 'prisma-studio-next';
 
 interface StudioHostIdentityResponse {
   product?: unknown;
