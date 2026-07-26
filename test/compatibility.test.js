@@ -30,7 +30,7 @@ const EXPECTED_BINARIES = {
   'prisma-sharding-migrate': './dist/cli/migrate.js',
   'prisma-sharding-baseline': './dist/cli/baseline.js',
   'prisma-sharding-push': './dist/cli/push.js',
-  'prisma-sharding-studio': './dist/cli/studio.js',
+  'prisma-studio-next': './dist/cli/studio.js',
   'prisma-sharding-test': './dist/cli/test.js',
 };
 
