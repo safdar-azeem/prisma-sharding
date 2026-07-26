@@ -21,4 +21,6 @@ export const INTERNAL_DEFAULTS = {
    */
   STUDIO_MAX_OPEN_CONNECTIONS: 3,
   STUDIO_IDLE_CONNECTION_TIMEOUT_MS: 60000,
+  /** Table grouping is opt-in, so the sidebar keeps its flat list by default. */
+  STUDIO_TABLE_GROUPING: false,
 } as const;
