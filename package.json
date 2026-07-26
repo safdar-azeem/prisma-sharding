@@ -23,7 +23,7 @@
     "prisma-sharding-migrate": "./dist/cli/migrate.js",
     "prisma-sharding-baseline": "./dist/cli/baseline.js",
     "prisma-sharding-push": "./dist/cli/push.js",
-    "prisma-sharding-studio": "./dist/cli/studio.js",
+    "prisma-studio-next": "./dist/cli/studio.js",
     "prisma-sharding-test": "./dist/cli/test.js"
   },
   "files": [
@@ -61,10 +61,10 @@
     "@prisma/client": ">=5.0.0"
   },
   "dependencies": {
-    "@prisma-sharding/studio": "0.0.3",
     "dotenv": "^16.3.1",
     "pg": "^8.18.0",
-    "postgres": "^3.4.7"
+    "postgres": "^3.4.7",
+    "prisma-studio-next": "0.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
