@@ -9,15 +9,26 @@
  * React, `@prisma-sharding/studio` and the shell are bundled together so the
  * published package has no browser-side runtime resolution to do, and so a
  * consuming project's own React version can never conflict with Studio's.
+ *
+ * The shell favicon is copied from `src/studio-host/shell/favicon.ico` into the
+ * asset directory so published Studio tabs get the icon with no host setup.
  */
 import { build } from 'esbuild';
-import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const shellDirectory = path.join(packageRoot, 'src', 'studio-host', 'shell');
 const outputDirectory = path.join(packageRoot, 'dist', 'studio-host-assets');
+const faviconSource = path.join(shellDirectory, 'favicon.ico');
+
+if (!existsSync(faviconSource)) {
+  throw new Error(
+    `Missing Studio favicon at ${path.relative(packageRoot, faviconSource)}. ` +
+      'Copy studio-main/favicon.ico into src/studio-host/shell/favicon.ico.'
+  );
+}
 
 rmSync(outputDirectory, { recursive: true, force: true });
 mkdirSync(outputDirectory, { recursive: true });
@@ -50,5 +61,7 @@ copyFileSync(
   path.join(shellDirectory, 'studioShellDocument.html'),
   path.join(outputDirectory, 'index.html')
 );
+copyFileSync(faviconSource, path.join(outputDirectory, 'favicon.ico'));
 
 console.log(`Studio host assets written to ${path.relative(packageRoot, outputDirectory)}`);
+console.log(`Studio favicon copied from ${path.relative(packageRoot, faviconSource)}`);
