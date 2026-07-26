@@ -235,6 +235,43 @@ test('the manifest explains missing, duplicated and fallback configuration', () 
   assert.ok(manifest.warnings.some((warning) => warning.includes('same physical database')));
 });
 
+// ------------------------------------------------------------ UI preferences
+
+test('table grouping is off unless the project turns it on', () => {
+  const result = resolveStudioHostTargets(env());
+
+  assert.equal(buildStudioShardManifest(result).ui.tableGrouping, false);
+  assert.equal(
+    buildStudioShardManifest(result, { ui: {} }).ui.tableGrouping,
+    false,
+    'an absent preference is off, not undefined'
+  );
+  assert.equal(
+    buildStudioShardManifest(result, { ui: { tableGrouping: true } }).ui.tableGrouping,
+    true
+  );
+});
+
+test('a non-boolean grouping preference never enables the feature', () => {
+  const result = resolveStudioHostTargets(env());
+
+  for (const value of ['true', 1, {}, null]) {
+    assert.equal(
+      buildStudioShardManifest(result, { ui: { tableGrouping: value } }).ui.tableGrouping,
+      false,
+      `rejected ${JSON.stringify(value)}`
+    );
+  }
+});
+
+test('the UI preferences block stays credential-free', () => {
+  const result = resolveStudioHostTargets(env());
+  const manifest = buildStudioShardManifest(result, { ui: { tableGrouping: true } });
+
+  assert.doesNotThrow(() => assertStudioShardManifestIsSafe(manifest, result.targets));
+  assert.deepEqual(Object.keys(manifest.ui), ['tableGrouping']);
+});
+
 // -------------------------------------------------------------- shard in URL
 
 test('switching shards changes only the shard parameter and keeps Studio navigation', () => {
