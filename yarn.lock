@@ -245,10 +245,10 @@
     "@nodelib/fs.scandir" "2.1.5"
     fastq "^1.6.0"
 
-"@prisma-sharding/studio@0.0.2":
-  version "0.0.2"
-  resolved "https://registry.yarnpkg.com/@prisma-sharding/studio/-/studio-0.0.2.tgz#ab3a48afb531ef0653e63e4fbca51f6ddd43e69d"
-  integrity sha512-DmAsZjtjEWetkaUEBWudIafNcw3zVNxpA2Ocloi/kNqGwKG9gCgF67hK4CMjW5Yl9RufmH7LmLrrq/pY+q+L3A==
+"@prisma-sharding/studio@0.0.3":
+  version "0.0.3"
+  resolved "https://registry.yarnpkg.com/@prisma-sharding/studio/-/studio-0.0.3.tgz#a013694b4cd064969ee73a3453db7925a4b226c0"
+  integrity sha512-3deCCA9qybKJeclcbX41h4mDnEAlGEDNKQDDEuiVYRCPD/uHi9WNfPrJVmW8HJpWjOvpgfXsqjpg7tMjURUI8A==
   dependencies:
     "@radix-ui/react-toggle" "1.1.10"
     "@visx/curve" "4.0.1-alpha.0"
