@@ -43,6 +43,10 @@ and both are useful to any embedder that owns connection selection or navigation
   might put an environment badge or a tenant picker there.
 - `StudioProps.onPendingChangesChange` — reports unsaved staged inserts and edits. Any host
   that can navigate away from a Studio session needs this to avoid silently discarding work.
+- `StudioProps.tableGrouping` — a single boolean that groups the sidebar table list by the
+  prefix table names share. Generic by construction: groups and labels are derived from the
+  schema being viewed, with no prefix vocabulary in the library, so it is useful to any
+  embedder with a large schema rather than to sharded projects specifically.
 
 Everything else uses contracts Studio already published: `createStudioBFFClient` with
 `customPayload` for host context, `createPostgresAdapter` over that client, and Studio's
@@ -79,6 +83,7 @@ reaches a connection.
 | `studioHostConnectionPool.ts`     | Lazy, bounded, idle-expiring connections keyed by shard            |
 | `studioHostConnectionString.ts`   | Consumes Prisma driver arguments postgres.js would reject          |
 | `studioHostShardUrl.ts`           | How the shard is represented in the URL, and what a switch preserves |
+| `studioHostManifest.ts` (`ui`)    | Project UI preferences forwarded to Studio, e.g. table grouping    |
 | `studioHostPostgresConnection.ts` | The only module that sees a connection string                      |
 | `studioHostBff.ts`                | One Studio procedure against one already-validated executor        |
 | `studioHostService.ts`            | Validation, authorization, routing — shared by CLI and embedders   |
