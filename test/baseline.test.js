@@ -133,9 +133,12 @@ test('dry run prints the plan without touching any database', async () => {
   }
 });
 
-test('--yes without --verified is refused before any database access', async () => {
+test('--yes alone executes; --verified is an acknowledgement, not a gate', async () => {
   const project = createProject();
-  const introspect = fakeIntrospect({});
+  const introspect = fakeIntrospect({
+    'postgresql://u:p@localhost/s1': states.pushBuilt,
+    'postgresql://u:p@localhost/s2': states.pushBuilt,
+  });
   const runPrisma = recordingRunPrisma();
 
   try {
@@ -147,9 +150,12 @@ test('--yes without --verified is refused before any database access', async () 
       runPrisma,
     });
 
-    assert.equal(code, 1);
-    assert.equal(introspect.calls.length, 0);
-    assert.equal(runPrisma.commands.length, 0);
+    assert.equal(code, 0);
+    assert.equal(introspect.calls.length, 2);
+    assert.deepEqual(
+      runPrisma.commands.map(({ command }) => command),
+      [`migrate resolve --applied ${INIT}`, `migrate resolve --applied ${INIT}`]
+    );
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
