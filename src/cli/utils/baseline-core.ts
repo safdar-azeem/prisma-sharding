@@ -204,29 +204,15 @@ export const runBaselineCli = async (options: BaselineCliOptions = {}): Promise<
     return 0;
   }
 
-  // Verification gate: recording a migration as applied permanently skips its
-  // SQL. Schema effects can be probed, but data effects (backfills, custom SQL)
-  // cannot be inferred - a human must confirm them.
+  // Recording a migration as applied permanently skips its SQL. `--verified` is
+  // an optional acknowledgement, not a gate: --yes is enough to execute.
   if (!args.verified) {
-    printCliRow('❌', 'blocked', 'Refusing to execute without --verified.');
     printCliRow(
       'ℹ️',
-      'why',
-      'Baselined migrations never run their SQL. Before executing, confirm that every'
+      'note',
+      `Baselined migrations never run their SQL. Confirm every migration up to ${args.until}`
     );
-    printCliRow(
-      'ℹ️',
-      '',
-      `migration up to ${args.until} is fully represented in EVERY target database:`
-    );
-    printCliRow('ℹ️', '', 'schema changes AND data effects (backfills, corrections, custom SQL).');
-    printCliRow(
-      'ℹ️',
-      'how',
-      'Probe schema objects via information_schema and review each migration for data steps.'
-    );
-    printCliRow('ℹ️', 'then', 'Re-run with: --yes --verified');
-    return 1;
+    printCliRow('ℹ️', '', 'is already represented in each target (schema AND data effects).');
   }
 
   // Phase 1: read-only preflight of every selected target. Nothing is written
