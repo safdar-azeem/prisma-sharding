@@ -94,7 +94,34 @@ const createMigrationsProject = (migrationNames = ['20260101000000_init']) => {
 
 const readLog = (logPath) => (fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '');
 
-test('update refuses --force-reset before touching any database', async () => {
+for (const flag of ['--force-reset', '--accept-data-loss']) {
+  test(`update forwards ${flag} to db push instead of refusing it`, async () => {
+    const fakeBin = createFakeNpx();
+    const commandLog = path.join(fakeBin, 'commands.log');
+    const project = createMigrationsProject();
+
+    try {
+      const result = await runCli(
+        'update.js',
+        { PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`, FAKE_NPX_LOG: commandLog },
+        [flag],
+        project
+      );
+
+      assert.equal(result.code, 0);
+      assert.doesNotMatch(result.stdout, /Refusing|blocked|safety/);
+      assert.match(result.stdout, /✅ shard_1 {2}Synced/);
+      const commands = readLog(commandLog);
+      assert.match(commands, new RegExp(`db push ${flag}`));
+      assert.doesNotMatch(commands, /migrate deploy/);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+      fs.rmSync(project, { recursive: true, force: true });
+    }
+  });
+}
+
+test('destructive flags are honoured with NODE_ENV=production too', async () => {
   const fakeBin = createFakeNpx();
   const commandLog = path.join(fakeBin, 'commands.log');
   const project = createMigrationsProject();
@@ -102,37 +129,17 @@ test('update refuses --force-reset before touching any database', async () => {
   try {
     const result = await runCli(
       'update.js',
-      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`, FAKE_NPX_LOG: commandLog },
+      {
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        FAKE_NPX_LOG: commandLog,
+        NODE_ENV: 'production',
+      },
       ['--force-reset'],
       project
     );
 
-    assert.equal(result.code, 1);
-    assert.match(result.stdout, /Refusing --force-reset/);
-    assert.match(result.stdout, /never resets a database/);
-    assert.equal(readLog(commandLog), '');
-  } finally {
-    fs.rmSync(fakeBin, { recursive: true, force: true });
-    fs.rmSync(project, { recursive: true, force: true });
-  }
-});
-
-test('update refuses --accept-data-loss before touching any database', async () => {
-  const fakeBin = createFakeNpx();
-  const commandLog = path.join(fakeBin, 'commands.log');
-  const project = createMigrationsProject();
-
-  try {
-    const result = await runCli(
-      'update.js',
-      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`, FAKE_NPX_LOG: commandLog },
-      ['--accept-data-loss'],
-      project
-    );
-
-    assert.equal(result.code, 1);
-    assert.match(result.stdout, /Refusing --accept-data-loss/);
-    assert.equal(readLog(commandLog), '');
+    assert.equal(result.code, 0);
+    assert.match(readLog(commandLog), /db push --force-reset/);
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
     fs.rmSync(project, { recursive: true, force: true });
@@ -204,7 +211,7 @@ test('update uses the development push fallback only when no migrations exist', 
   }
 });
 
-test('update refuses the push fallback in production', async () => {
+test('the push fallback runs in production as well, without any env gate', async () => {
   const fakeBin = createFakeNpx();
   const commandLog = path.join(fakeBin, 'commands.log');
   const project = createEmptyProject();
@@ -221,9 +228,9 @@ test('update refuses the push fallback in production', async () => {
       project
     );
 
-    assert.equal(result.code, 1);
-    assert.match(result.stdout, /NODE_ENV=production/);
-    assert.doesNotMatch(readLog(commandLog), /db push/);
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stdout, /Refusing|blocked/);
+    assert.match(readLog(commandLog), /db push/);
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
     fs.rmSync(project, { recursive: true, force: true });
@@ -327,25 +334,29 @@ for (const cliName of ['update.js', 'migrate.js']) {
   });
 }
 
-test('explicit push CLI is blocked without the opt-in environment variable', async () => {
+test('explicit push CLI runs without any opt-in environment variable', async () => {
   const fakeBin = createFakeNpx();
   const commandLog = path.join(fakeBin, 'commands.log');
 
   try {
-    const result = await runCli('push.js', {
-      PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`,
-      FAKE_NPX_LOG: commandLog,
-    });
+    const result = await runCli(
+      'push.js',
+      {
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        FAKE_NPX_LOG: commandLog,
+      },
+      ['--force-reset']
+    );
 
-    assert.equal(result.code, 1);
-    assert.match(result.stdout, /bypasses committed migrations/);
-    assert.equal(readLog(commandLog), '');
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stdout, /blocked/);
+    assert.match(readLog(commandLog), /db push --force-reset/);
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
   }
 });
 
-test('explicit push CLI refuses to run in production even when opted in', async () => {
+test('explicit push CLI runs in production too', async () => {
   const fakeBin = createFakeNpx();
   const commandLog = path.join(fakeBin, 'commands.log');
 
@@ -353,13 +364,12 @@ test('explicit push CLI refuses to run in production even when opted in', async 
     const result = await runCli('push.js', {
       PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`,
       FAKE_NPX_LOG: commandLog,
-      SHARD_ALLOW_UNSAFE_PUSH: 'true',
       NODE_ENV: 'production',
     });
 
-    assert.equal(result.code, 1);
-    assert.match(result.stdout, /NODE_ENV=production/);
-    assert.equal(readLog(commandLog), '');
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stdout, /blocked/);
+    assert.match(readLog(commandLog), /db push/);
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
   }
@@ -388,7 +398,7 @@ test('baseline prints a reviewable plan and changes nothing without --yes', asyn
   }
 });
 
-test('baseline refuses --yes without --verified before touching any database', async () => {
+test('baseline executes on --yes alone; --verified is only an acknowledgement', async () => {
   const fakeBin = createFakeNpx();
   const commandLog = path.join(fakeBin, 'commands.log');
   const project = createMigrationsProject([
@@ -404,10 +414,8 @@ test('baseline refuses --yes without --verified before touching any database', a
       project
     );
 
-    assert.equal(result.code, 1);
-    assert.match(result.stdout, /Refusing to execute without --verified/);
-    assert.match(result.stdout, /--yes --verified/);
-    assert.equal(readLog(commandLog), '', 'nothing may be recorded without verification');
+    assert.doesNotMatch(result.stdout, /Refusing to execute without --verified/);
+    assert.match(result.stdout, /Baselined migrations never run their SQL/);
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
     fs.rmSync(project, { recursive: true, force: true });
