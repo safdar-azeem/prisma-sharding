@@ -209,8 +209,6 @@ SHARD_STUDIO_VERBOSE=false # optional, defaults to false
 SHARD_CLI_VERBOSE=false # optional, verbose update/migrate output
 PRISMA_SHARDING_VERBOSE=false # optional, library lifecycle logs
 SHARD_STRICT_DRIFT=false # optional, make schema drift fail the run (CI/production)
-SHARD_DISABLE_PUSH_FALLBACK=false # optional, forbid the dev-only push fallback entirely
-SHARD_ALLOW_UNSAFE_PUSH=false # optional, required opt-in for prisma-sharding-push
 PRISMA_MIGRATIONS_PATH= # optional, migrations directory override
 PRISMA_SCHEMA_PATH= # optional, schema path override for post-apply verification
 ```
@@ -282,16 +280,26 @@ Because the command only exits zero when every database succeeded, chaining is s
 yarn db:update && yarn dev
 ```
 
-**Committed migrations are always authoritative.** When migration files exist, `db push` is
-never used - a required column on a populated table must be handled inside the migration
+**Committed migrations are the default.** When migration files exist, `db push` is not used
+on its own - a required column on a populated table should be handled inside the migration
 (add nullable → backfill → set NOT NULL), and `migrate deploy` runs that SQL as committed.
-Only when the project has *no* migration files at all does the command fall back to a plain,
-development-only `prisma db push` (never in `NODE_ENV=production`, and never with data-loss
-flags; disable entirely with `SHARD_DISABLE_PUSH_FALLBACK=true`).
+When the project has *no* migration files at all, the command falls back to a plain
+`prisma db push`. The fallback works in every environment; there is no env gate on it.
 
-Safety guarantees, in all modes:
+**Destructive flags are honoured, not refused.** Passing `--force-reset` or
+`--accept-data-loss` switches the run to a direct `prisma db push` with that flag forwarded
+verbatim to every configured database and shard:
 
-- `--force-reset` and `--accept-data-loss` are refused outright, never injected or forwarded.
+```bash
+yarn db:update --force-reset        # resets and re-pushes every shard
+yarn db:update --accept-data-loss   # pushes and accepts the data loss Prisma reports
+```
+
+Neither flag is ever *injected* on your behalf, and neither is gated by `NODE_ENV` or an
+opt-in environment variable — an explicit flag is treated as an explicit instruction.
+
+What still applies when you do not pass a destructive flag:
+
 - A failed or partially-applied migration stops the run; the command never continues to
   `db push` after a migration failure and never marks a failed migration as applied.
 - Databases already migrated stay migrated; rerunning `yarn db:update` is idempotent and is
@@ -373,16 +381,16 @@ without running any SQL, altering any schema, or deleting any data:
 # Print the plan (changes nothing, opens no connections):
 npx prisma-sharding-baseline --until <cutoff_migration>
 
-# Execute it (both flags required):
-npx prisma-sharding-baseline --until <cutoff_migration> --yes --verified
+# Execute it:
+npx prisma-sharding-baseline --until <cutoff_migration> --yes
 ```
 
-A baselined migration **never has its SQL executed**, so the cutoff must be verified, not
+A baselined migration **never has its SQL executed**, so the cutoff should be verified, not
 guessed: every migration up to and including `--until` must already be fully represented in
 every target database — its schema changes *and* its data effects (backfills, corrections,
-custom SQL). `--verified` is your explicit confirmation of that; without it, `--yes` is
-refused. Schema effects can be probed via `information_schema`; data effects require reading
-each migration.
+custom SQL). Adding `--verified` acknowledges that and silences the reminder; it is not a
+gate — `--yes` alone executes. Schema effects can be probed via `information_schema`; data
+effects require reading each migration.
 
 Execution is two-phase: first a **read-only preflight of every selected database** (state,
 history consistency, checksums) — if any target is unreachable or inconsistent, nothing is
@@ -394,11 +402,12 @@ treated as a CLI datasource placeholder, not a failure.
 Migrations after `--until` stay pending so the next `yarn db:update` runs their SQL,
 including backfills. Use `--only shard_1,shard_2` to restrict targets.
 
-#### `prisma-sharding-push` (unsafe, explicit opt-in)
+#### `prisma-sharding-push`
 
-A deliberate escape hatch for a disposable local database only. It bypasses migration
-history, so it is blocked unless `SHARD_ALLOW_UNSAFE_PUSH=true` is set, and always refuses
-to run with `NODE_ENV=production`. The normal workflow never needs it.
+A direct `prisma db push` against every configured database and shard, forwarding any flags
+you pass (`--force-reset`, `--accept-data-loss`, …). It bypasses migration history, so
+`yarn db:update` remains the normal workflow — but it needs no opt-in environment variable
+and runs in any `NODE_ENV`.
 
 #### `prisma-studio-next`
 
