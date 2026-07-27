@@ -422,26 +422,32 @@ test('retrying after a partial failure is idempotent and skips already-migrated 
   }
 });
 
-test('destructive flags from the caller are refused before any command runs', async () => {
+test('destructive flags from the caller are forwarded to db push, in any environment', async () => {
   const project = createProject([TICKET_MIGRATION]);
-  const runPrisma = recordingRunPrisma();
 
   try {
     for (const flag of ['--force-reset', '--accept-data-loss']) {
-      const summary = await runDatabaseUpdate({
-        targets: [target('shard_1', 'postgresql://u:p@localhost/s1')],
-        extraArgs: [flag],
-        cwd: project,
-        env: {},
-        introspect: fakeIntrospect({}),
-        runPrisma,
-      });
+      for (const env of [{}, { NODE_ENV: 'production' }]) {
+        const runPrisma = recordingRunPrisma();
+        const summary = await runDatabaseUpdate({
+          targets: [target('shard_1', 'postgresql://u:p@localhost/s1')],
+          extraArgs: [flag],
+          cwd: project,
+          env,
+          introspect: fakeIntrospect({}),
+          runPrisma,
+        });
 
-      assert.equal(summary.success, false);
-      assert.equal(summary.strategy, 'blocked');
-      assert.equal(summary.results[0].attempted, false);
+        assert.equal(summary.success, true);
+        assert.equal(summary.strategy, 'push');
+        assert.equal(summary.results[0].attempted, true);
+        assert.deepEqual(
+          runPrisma.commands.map(({ command }) => command),
+          [`db push ${flag}`],
+          'the migration pipeline is skipped and the flag is passed straight through'
+        );
+      }
     }
-    assert.equal(runPrisma.commands.length, 0);
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
