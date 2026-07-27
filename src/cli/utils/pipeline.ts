@@ -18,9 +18,10 @@ import { createCliLoader, printCliRow } from './output';
 import { DatabaseTarget, maskShardUrl } from './shards';
 
 /**
- * Flags that make Prisma drop or recreate data. The update pipeline never adds
- * them and refuses to forward them: a committed migration must be able to apply
- * itself, and a migration that cannot is a bug to fix, not data to delete.
+ * Flags that make Prisma drop or recreate data. The pipeline never *adds* them
+ * on its own, but it always honours them when a developer passes them
+ * explicitly: they switch the run to a direct `prisma db push`, which is the
+ * only Prisma command that accepts them. No environment gating, no prompt.
  */
 export const DESTRUCTIVE_FLAGS = ['--force-reset', '--accept-data-loss'];
 
@@ -183,51 +184,26 @@ interface PushFallbackOptions {
   extraArgs: string[];
   verbose: boolean;
   env: NodeJS.ProcessEnv;
-  directoryError: string;
+  /** Why the direct push path was chosen (shown in verbose only). */
+  reason: string;
   execute: ExecuteFn;
 }
 
 /**
- * Only reached when the project genuinely has no committed migrations. This is
- * the development bootstrap case; it is refused in production and refused when
- * the absence of migrations looks like a broken checkout.
+ * Direct `prisma db push` against every target, forwarding whatever flags the
+ * caller passed. Reached when the project has no committed migrations, or when
+ * the caller explicitly asked for a destructive flag. Works in every
+ * environment - the CLI does not second-guess an explicit instruction.
  */
 const pushFallback = async ({
   targets,
   extraArgs,
   verbose,
-  env,
-  directoryError,
+  reason,
   execute,
 }: PushFallbackOptions): Promise<UpdateSummary> => {
-  const isProduction = env.NODE_ENV === 'production';
-  const optedOut = parseBooleanEnv('SHARD_DISABLE_PUSH_FALLBACK', false, env);
-
-  if (isProduction || optedOut) {
-    printCliRow('❌', 'migrations', directoryError);
-    printCliRow(
-      'ℹ️',
-      'info',
-      isProduction
-        ? 'Refusing to synchronise schemas without migrations while NODE_ENV=production.'
-        : 'Refusing the development push fallback because SHARD_DISABLE_PUSH_FALLBACK is set.'
-    );
-    printCliRow('ℹ️', 'info', `Commit a migration directory, then rerun: ${PUBLIC_COMMAND}`);
-    return {
-      success: false,
-      strategy: 'blocked',
-      results: notAttempted(targets, 'config', directoryError),
-      warnings: [],
-    };
-  }
-
   if (verbose) {
-    printCliRow('ℹ️', 'migrations', directoryError);
-    printCliRow(
-      'ℹ️',
-      'push',
-      'No migration history to apply - synchronising schemas directly (development only).'
-    );
+    printCliRow('ℹ️', 'push', reason);
     console.log('');
   }
 
@@ -247,7 +223,8 @@ const pushFallback = async ({
     }
 
     const loader = createCliLoader(target.id, 'Pushing', !verbose);
-    // extraArgs is already known to be free of destructive flags at this point.
+    // Caller flags (including --force-reset / --accept-data-loss) are forwarded
+    // verbatim; `db push` is the Prisma command that understands them.
     const pushed = await execute(target, ['db', 'push', ...extraArgs], 'Pushing schema to');
 
     if (pushed.success) {
@@ -278,13 +255,8 @@ const pushFallback = async ({
     if (/data loss|force-reset|not empty/i.test(String(pushed.error || ''))) {
       printCliRow(
         'ℹ️',
-        'safe',
-        'Prisma asked for a destructive flag. It was not supplied and nothing was changed.'
-      );
-      printCliRow(
-        'ℹ️',
         'next',
-        'Write a migration that adds the column nullable, backfills it, then makes it required.'
+        'Prisma needs a destructive flag here. Rerun with --accept-data-loss or --force-reset.'
       );
     }
   }
@@ -372,27 +344,9 @@ export const runDatabaseUpdate = async (
     return result;
   };
 
-  // 1. Refuse destructive flags before touching anything.
+  // 1. An explicit destructive flag is an explicit instruction. Note it here and
+  //    honour it after the client is generated - it is never refused.
   const destructive = extraArgs.filter((arg) => DESTRUCTIVE_FLAGS.includes(arg.split('=')[0]));
-
-  if (destructive.length > 0) {
-    printCliRow(
-      '❌',
-      'safety',
-      `Refusing ${destructive.join(', ')}. This command never resets a database or drops data.`
-    );
-    printCliRow(
-      'ℹ️',
-      'info',
-      'For a disposable local database only, use `prisma-sharding-push` explicitly.'
-    );
-    return {
-      success: false,
-      strategy: 'blocked',
-      results: notAttempted(targets, 'config', 'Refused destructive flag'),
-      warnings: [],
-    };
-  }
 
   // 2. Generate the Prisma Client once for the whole run.
   if (generateClient) {
@@ -417,6 +371,20 @@ export const runDatabaseUpdate = async (
     }
 
     loader.succeed('Generated');
+  }
+
+  // 2b. Destructive flags were requested explicitly: push the schema directly
+  //     and skip the migration pipeline. This is what `--force-reset` means and
+  //     it is honoured in every environment, exactly as the caller asked.
+  if (destructive.length > 0) {
+    return pushFallback({
+      targets,
+      extraArgs,
+      verbose,
+      env,
+      reason: `${destructive.join(', ')} requested - pushing the schema directly.`,
+      execute,
+    });
   }
 
   // 3. Decide the authoritative mechanism: committed migrations, or nothing.
@@ -449,9 +417,9 @@ export const runDatabaseUpdate = async (
       extraArgs,
       verbose,
       env,
-      directoryError: directory.path
-        ? `No committed migrations found in ${directory.path}.`
-        : directory.error || 'Migrations directory not found.',
+      reason: directory.path
+        ? `No committed migrations found in ${directory.path} - synchronising schemas directly.`
+        : `${directory.error || 'Migrations directory not found.'} Synchronising schemas directly.`,
       execute,
     });
   }
