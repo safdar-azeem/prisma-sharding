@@ -214,9 +214,11 @@ PRISMA_SCHEMA_PATH= # optional, schema path override for post-apply verification
 ```
 
 The primary `DATABASE_URL` is also updated when it uses the same Prisma schema. If it points
-at the same physical database as a shard URL, it is processed once, not twice; if it was never
-created and real shards are configured, it is treated as a CLI datasource placeholder and
-skipped.
+at the same physical database as a shard URL (same host, database, and `?schema=`), it is
+processed once, not twice. If it is missing on the server **or empty** (no user tables and
+no migration history) while real shards are configured, it is treated as a CLI datasource
+placeholder and skipped — so a blank `schema=public` beside populated `schema=shardN`
+targets cannot run a stub migration history and block the fleet.
 
 ### Commands
 
@@ -396,8 +398,9 @@ Execution is two-phase: first a **read-only preflight of every selected database
 history consistency, checksums) — if any target is unreachable or inconsistent, nothing is
 recorded anywhere — then the history rows are written. Rerunning after a partial failure is
 safe: already-recorded migrations are skipped. Empty databases are skipped entirely
-(`db:update` builds them from the full history), and an uncreated primary `DATABASE_URL` is
-treated as a CLI datasource placeholder, not a failure.
+(`db:update` builds them from the full history), and an uncreated or empty primary
+`DATABASE_URL` is treated as a CLI datasource placeholder when shards are configured, not a
+failure.
 
 Migrations after `--until` stay pending so the next `yarn db:update` runs their SQL,
 including backfills. Use `--only shard_1,shard_2` to restrict targets.
