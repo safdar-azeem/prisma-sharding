@@ -298,6 +298,61 @@ test('normal update output stays quiet: Synced only, skipped primary hidden', as
   }
 });
 
+test('empty primary DATABASE_URL is skipped when shards are configured', async () => {
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION]);
+  const urls = {
+    'postgresql://u:p@localhost/main': states.emptyDatabase(),
+    'postgresql://u:p@localhost/s1': states.pushBuilt(),
+    'postgresql://u:p@localhost/s2': states.pushBuilt(),
+  };
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => {
+    lines.push(args.map(String).join(' '));
+  };
+
+  try {
+    fs.writeFileSync(
+      path.join(project, 'prisma-sharding.config.json'),
+      JSON.stringify({
+        migrations: { legacyBaseline: { until: INIT_MIGRATION, verified: true } },
+      })
+    );
+
+    const runPrisma = recordingRunPrisma();
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('primary', 'postgresql://u:p@localhost/main', true),
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      verbose: true,
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect(urls),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, true);
+    const stdout = lines.join('\n');
+    assert.match(stdout, /⏭️ primary {2}Skipped \(DATABASE_URL empty; shards configured\)/);
+    assert.match(stdout, /✅ shard_1/);
+    assert.match(stdout, /✅ shard_2/);
+    assert.equal(
+      summary.results.find((result) => result.id === 'primary')?.message,
+      'Skipped - empty DATABASE_URL while shards are configured'
+    );
+    assert.equal(
+      runPrisma.commands.filter((command) => command.url.endsWith('/main')).length,
+      0,
+      'empty primary must never receive migrate deploy'
+    );
+  } finally {
+    console.log = originalLog;
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test('verbose update output keeps skip reasons, detailed statuses, and the Complete line', async () => {
   const project = createProject([TICKET_MIGRATION]);
   const urls = {
