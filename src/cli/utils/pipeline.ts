@@ -84,6 +84,8 @@ interface PreflightEntry {
   blocked: boolean;
   blockedMessage?: string;
   skipped: boolean;
+  /** Verbose skip reason when primary is a CLI placeholder. */
+  skipReason?: string;
   /** Migrations to record as applied before deploying (verified legacy baseline). */
   baselinePlan: string[];
 }
@@ -457,10 +459,14 @@ export const runDatabaseUpdate = async (
       warnings.push({ id: target.id, kind: 'note', message });
     }
 
-    // A DATABASE_URL that was never created is a CLI datasource placeholder when
-    // real shards are configured; it is not a database we are failing to migrate.
+    // DATABASE_URL is often only a Prisma CLI / primary-client datasource. When
+    // real shards are configured, skip an uncreated or empty primary so a stub
+    // migration history cannot be applied to a blank schema (e.g. schema=public
+    // beside schema=shardN) and block the shard fleet.
     const skippablePrimary =
-      state.kind === 'absent' && target.isPrimary && shardTargets.length > 0;
+      target.isPrimary &&
+      shardTargets.length > 0 &&
+      (state.kind === 'absent' || state.kind === 'new');
 
     if (skippablePrimary) {
       preflight.push({
@@ -468,6 +474,10 @@ export const runDatabaseUpdate = async (
         state,
         blocked: false,
         skipped: true,
+        skipReason:
+          state.kind === 'absent'
+            ? 'Skipped (DATABASE_URL not created)'
+            : 'Skipped (DATABASE_URL empty; shards configured)',
         baselinePlan: [],
       });
       continue;
@@ -596,14 +606,21 @@ export const runDatabaseUpdate = async (
 
     if (entry.skipped) {
       if (verbose) {
-        printCliRow('⏭️', target.id, 'Skipped (DATABASE_URL not created)');
+        printCliRow(
+          '⏭️',
+          target.id,
+          entry.skipReason || 'Skipped (DATABASE_URL placeholder)'
+        );
       }
       results.push({
         id: target.id,
         success: true,
         attempted: false,
         kind: entry.state.kind,
-        message: 'Skipped - database does not exist and shards are configured',
+        message:
+          entry.state.kind === 'new'
+            ? 'Skipped - empty DATABASE_URL while shards are configured'
+            : 'Skipped - database does not exist and shards are configured',
       });
       continue;
     }
