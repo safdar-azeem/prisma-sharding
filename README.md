@@ -302,7 +302,9 @@ opt-in environment variable — an explicit flag is treated as an explicit instr
 When `postgresql.extensions` is configured, the reset remains supported. If Prisma drops
 an extension and the first schema push fails on a dependent index, type, or function, the
 pipeline restores the configured extensions and retries the schema push once without
-resetting the database a second time.
+resetting the database a second time. That bounded recovery push includes
+`--accept-data-loss`, because the caller already authorized complete destruction and the
+failed reset pass can leave a partial schema that Prisma otherwise refuses to complete.
 
 #### PostgreSQL extension prerequisites
 
