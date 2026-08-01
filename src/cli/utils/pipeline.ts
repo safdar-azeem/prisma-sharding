@@ -234,26 +234,63 @@ const pushFallback = async ({
     }
 
     const loader = createCliLoader(target.id, 'Pushing', !verbose);
-    const provisioned = await ensureExtensions(target.url, extensions);
-    if (!provisioned.success) {
-      loader.fail('Extension setup failed');
-      failedAny = true;
-      results.push({
-        id: target.id,
-        success: false,
-        attempted: true,
-        kind: 'config',
-        message: provisioned.error || 'PostgreSQL extension setup failed',
-      });
-      if (!verbose && provisioned.error) {
-        console.error(provisioned.error);
-      }
-      continue;
-    }
-
     // Caller flags (including --force-reset / --accept-data-loss) are forwarded
     // verbatim; `db push` is the Prisma command that understands them.
-    const pushed = await execute(target, ['db', 'push', ...extraArgs], 'Pushing schema to');
+    const forceReset = extraArgs.some((arg) => arg.split('=')[0] === '--force-reset');
+    let pushed: CommandResult;
+
+    if (forceReset) {
+      // Prisma calculates the push plan before resetting. If an extension was
+      // present during planning, reset can drop it without scheduling its
+      // recreation, so a dependent index/type may fail partway through. Retry
+      // once after restoring prerequisites, without resetting a second time.
+      pushed = await execute(target, ['db', 'push', ...extraArgs], 'Resetting schema on');
+      const provisioned = await ensureExtensions(target.url, extensions);
+
+      if (!provisioned.success) {
+        loader.fail('Extension setup failed');
+        failedAny = true;
+        results.push({
+          id: target.id,
+          success: false,
+          attempted: true,
+          kind: 'config',
+          message: provisioned.error || 'PostgreSQL extension setup failed',
+        });
+        if (!verbose && provisioned.error) {
+          console.error(provisioned.error);
+        }
+        continue;
+      }
+
+      if (!pushed.success && extensions.length > 0) {
+        const retryArgs = extraArgs.filter((arg) => arg.split('=')[0] !== '--force-reset');
+        pushed = await execute(
+          target,
+          ['db', 'push', ...retryArgs],
+          'Retrying schema push after extension setup on'
+        );
+      }
+    } else {
+      const provisioned = await ensureExtensions(target.url, extensions);
+      if (!provisioned.success) {
+        loader.fail('Extension setup failed');
+        failedAny = true;
+        results.push({
+          id: target.id,
+          success: false,
+          attempted: true,
+          kind: 'config',
+          message: provisioned.error || 'PostgreSQL extension setup failed',
+        });
+        if (!verbose && provisioned.error) {
+          console.error(provisioned.error);
+        }
+        continue;
+      }
+
+      pushed = await execute(target, ['db', 'push', ...extraArgs], 'Pushing schema to');
+    }
 
     if (pushed.success) {
       loader.succeed(verbose ? 'Schema synchronised' : 'Synced');
@@ -406,22 +443,9 @@ export const runDatabaseUpdate = async (
     loader.succeed('Generated');
   }
 
-  // 2b. Destructive flags request a direct schema push. A configured extension
-  //     prerequisite makes force-reset internally contradictory: reset drops
-  //     the extension immediately before dependent schema objects are created.
+  // 2b. Destructive flags request a direct schema push. Extension-aware reset
+  //     recovery is handled inside pushFallback without resetting twice.
   if (destructive.length > 0) {
-    if (destructive.includes('--force-reset') && requiredExtensions.length > 0) {
-      const message =
-        '--force-reset drops extension objects before schema push. Remove the flag; ' +
-        'required PostgreSQL extensions are provisioned automatically.';
-      printCliRow('❌', 'config', message);
-      return {
-        success: false,
-        strategy: 'blocked',
-        results: notAttempted(targets, 'config', message),
-        warnings: [],
-      };
-    }
     return pushFallback({
       targets,
       extraArgs,
