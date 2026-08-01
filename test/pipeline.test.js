@@ -638,7 +638,7 @@ test('force-reset retries once without resetting after restoring dropped extensi
     assert.equal(ensureExtensions.calls.length, 1);
     assert.deepEqual(
       runPrisma.commands.map(({ command }) => command),
-      ['db push --force-reset', 'db push']
+      ['db push --force-reset', 'db push --accept-data-loss']
     );
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
