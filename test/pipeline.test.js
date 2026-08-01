@@ -584,7 +584,7 @@ test('extension setup failure stops the push fleet before Prisma changes that ta
   }
 });
 
-test('force-reset is blocked when configured extensions would be dropped', async () => {
+test('force-reset remains supported when configured extensions survive the reset push', async () => {
   const project = createProject();
   const runPrisma = recordingRunPrisma();
   const ensureExtensions = recordingEnsureExtensions();
@@ -602,11 +602,44 @@ test('force-reset is blocked when configured extensions would be dropped', async
       },
     });
 
-    assert.equal(summary.success, false);
-    assert.equal(summary.strategy, 'blocked');
-    assert.match(summary.results[0].message, /drops extension objects/);
-    assert.equal(ensureExtensions.calls.length, 0);
-    assert.equal(runPrisma.commands.length, 0);
+    assert.equal(summary.success, true);
+    assert.equal(summary.strategy, 'push');
+    assert.equal(ensureExtensions.calls.length, 1);
+    assert.deepEqual(
+      runPrisma.commands.map(({ command }) => command),
+      ['db push --force-reset']
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('force-reset retries once without resetting after restoring dropped extensions', async () => {
+  const project = createProject();
+  const runPrisma = recordingRunPrisma({
+    failWhen: (command) => command === 'db push --force-reset',
+  });
+  const ensureExtensions = recordingEnsureExtensions();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', 'postgresql://u:p@localhost/s1')],
+      extraArgs: ['--force-reset'],
+      cwd: project,
+      env: {},
+      runPrisma,
+      ensureExtensions,
+      projectConfig: {
+        postgresql: { extensions: [{ name: 'pg_trgm', schema: 'public' }] },
+      },
+    });
+
+    assert.equal(summary.success, true);
+    assert.equal(ensureExtensions.calls.length, 1);
+    assert.deepEqual(
+      runPrisma.commands.map(({ command }) => command),
+      ['db push --force-reset', 'db push']
+    );
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
