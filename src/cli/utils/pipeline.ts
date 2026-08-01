@@ -5,7 +5,7 @@ import {
   runPrismaCommand,
   sanitizeCommandOutput,
 } from './command';
-import { loadProjectConfig, ShardingProjectConfig } from './config';
+import { loadProjectConfig, PostgresExtensionConfig, ShardingProjectConfig } from './config';
 import { IntrospectFn, introspectDatabase } from './introspect';
 import { classifyMigrationState, MigrationState, MigrationStateKind, isBlockingState } from './migration-state';
 import {
@@ -15,6 +15,10 @@ import {
   resolveSchemaPath,
 } from './migrations';
 import { createCliLoader, printCliRow } from './output';
+import {
+  EnsurePostgresExtensionsFn,
+  ensurePostgresExtensions,
+} from './postgresExtensions';
 import { DatabaseTarget, maskShardUrl } from './shards';
 
 /**
@@ -69,6 +73,7 @@ export interface DatabaseUpdateOptions {
   /** Test seams: production callers never pass these. */
   introspect?: IntrospectFn;
   runPrisma?: RunPrismaFn;
+  ensureExtensions?: EnsurePostgresExtensionsFn;
   projectConfig?: ShardingProjectConfig;
 }
 
@@ -189,6 +194,8 @@ interface PushFallbackOptions {
   /** Why the direct push path was chosen (shown in verbose only). */
   reason: string;
   execute: ExecuteFn;
+  extensions: PostgresExtensionConfig[];
+  ensureExtensions: EnsurePostgresExtensionsFn;
 }
 
 /**
@@ -203,6 +210,8 @@ const pushFallback = async ({
   verbose,
   reason,
   execute,
+  extensions,
+  ensureExtensions,
 }: PushFallbackOptions): Promise<UpdateSummary> => {
   if (verbose) {
     printCliRow('ℹ️', 'push', reason);
@@ -225,6 +234,23 @@ const pushFallback = async ({
     }
 
     const loader = createCliLoader(target.id, 'Pushing', !verbose);
+    const provisioned = await ensureExtensions(target.url, extensions);
+    if (!provisioned.success) {
+      loader.fail('Extension setup failed');
+      failedAny = true;
+      results.push({
+        id: target.id,
+        success: false,
+        attempted: true,
+        kind: 'config',
+        message: provisioned.error || 'PostgreSQL extension setup failed',
+      });
+      if (!verbose && provisioned.error) {
+        console.error(provisioned.error);
+      }
+      continue;
+    }
+
     // Caller flags (including --force-reset / --accept-data-loss) are forwarded
     // verbatim; `db push` is the Prisma command that understands them.
     const pushed = await execute(target, ['db', 'push', ...extraArgs], 'Pushing schema to');
@@ -258,7 +284,9 @@ const pushFallback = async ({
       printCliRow(
         'ℹ️',
         'next',
-        'Prisma needs a destructive flag here. Rerun with --accept-data-loss or --force-reset.'
+        extensions.length > 0
+          ? 'Prisma needs a destructive flag here. Review the change, then rerun with --accept-data-loss.'
+          : 'Prisma needs a destructive flag here. Rerun with --accept-data-loss or --force-reset.'
       );
     }
   }
@@ -318,10 +346,13 @@ export const runDatabaseUpdate = async (
     env = process.env,
     introspect = introspectDatabase,
     runPrisma = runPrismaCommand,
+    ensureExtensions = ensurePostgresExtensions,
   } = options;
 
   const strictDrift =
     options.strictDrift ?? parseBooleanEnv('SHARD_STRICT_DRIFT', false, env);
+  const projectConfig = options.projectConfig ?? loadProjectConfig(cwd).config;
+  const requiredExtensions = projectConfig.postgresql?.extensions || [];
 
   const execute: ExecuteFn = async (target, commandArgs, action) => {
     const commandEnv = { ...env, DATABASE_URL: target.url };
@@ -375,10 +406,22 @@ export const runDatabaseUpdate = async (
     loader.succeed('Generated');
   }
 
-  // 2b. Destructive flags were requested explicitly: push the schema directly
-  //     and skip the migration pipeline. This is what `--force-reset` means and
-  //     it is honoured in every environment, exactly as the caller asked.
+  // 2b. Destructive flags request a direct schema push. A configured extension
+  //     prerequisite makes force-reset internally contradictory: reset drops
+  //     the extension immediately before dependent schema objects are created.
   if (destructive.length > 0) {
+    if (destructive.includes('--force-reset') && requiredExtensions.length > 0) {
+      const message =
+        '--force-reset drops extension objects before schema push. Remove the flag; ' +
+        'required PostgreSQL extensions are provisioned automatically.';
+      printCliRow('❌', 'config', message);
+      return {
+        success: false,
+        strategy: 'blocked',
+        results: notAttempted(targets, 'config', message),
+        warnings: [],
+      };
+    }
     return pushFallback({
       targets,
       extraArgs,
@@ -386,6 +429,8 @@ export const runDatabaseUpdate = async (
       env,
       reason: `${destructive.join(', ')} requested - pushing the schema directly.`,
       execute,
+      extensions: requiredExtensions,
+      ensureExtensions,
     });
   }
 
@@ -395,7 +440,6 @@ export const runDatabaseUpdate = async (
   const localChecksums = directory.path ? readLocalMigrationChecksums(directory.path) : {};
   const schemaPath = resolveSchemaPath(cwd, env);
   const verifySchema = createSchemaVerifier();
-  const projectConfig = options.projectConfig ?? loadProjectConfig(cwd).config;
   const legacyBaseline = projectConfig.migrations?.legacyBaseline;
 
   if (verbose) {
@@ -423,6 +467,8 @@ export const runDatabaseUpdate = async (
         ? `No committed migrations found in ${directory.path} - synchronising schemas directly.`
         : `${directory.error || 'Migrations directory not found.'} Synchronising schemas directly.`,
       execute,
+      extensions: requiredExtensions,
+      ensureExtensions,
     });
   }
 
