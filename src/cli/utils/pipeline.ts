@@ -265,6 +265,12 @@ const pushFallback = async ({
 
       if (!pushed.success && extensions.length > 0) {
         const retryArgs = extraArgs.filter((arg) => arg.split('=')[0] !== '--force-reset');
+        if (!retryArgs.some((arg) => arg.split('=')[0] === '--accept-data-loss')) {
+          // The caller already authorized complete data destruction with
+          // --force-reset. Its failed first pass can leave a partial schema
+          // whose completion Prisma classifies as additional data loss.
+          retryArgs.push('--accept-data-loss');
+        }
         pushed = await execute(
           target,
           ['db', 'push', ...retryArgs],
