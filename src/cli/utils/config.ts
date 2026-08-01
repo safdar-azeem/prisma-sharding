@@ -15,7 +15,18 @@ export interface LegacyBaselineConfig {
   verified?: boolean;
 }
 
+export interface PostgresExtensionConfig {
+  /** PostgreSQL extension name as listed by pg_available_extensions. */
+  name: string;
+  /** Schema that must own the extension objects. Defaults to public. */
+  schema?: string;
+}
+
 export interface ShardingProjectConfig {
+  postgresql?: {
+    /** Idempotently provisioned before the db-push fallback runs. */
+    extensions?: PostgresExtensionConfig[];
+  };
   migrations?: {
     legacyBaseline?: LegacyBaselineConfig;
   };
