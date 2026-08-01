@@ -130,6 +130,18 @@ const recordingRunPrisma = ({ failWhen } = {}) => {
   return fn;
 };
 
+const recordingEnsureExtensions = ({ failUrl } = {}) => {
+  const calls = [];
+  const fn = async (url, extensions) => {
+    calls.push({ url, extensions });
+    return url === failUrl
+      ? { success: false, error: 'permission denied to create extension pg_trgm' }
+      : { success: true };
+  };
+  fn.calls = calls;
+  return fn;
+};
+
 const assertNoDestructiveFlags = (runPrisma) => {
   for (const { command } of runPrisma.commands) {
     for (const flag of DESTRUCTIVE_FLAGS) {
@@ -503,6 +515,98 @@ test('destructive flags from the caller are forwarded to db push, in any environ
         );
       }
     }
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('the push fallback provisions configured extensions before each database push', async () => {
+  const project = createProject();
+  const runPrisma = recordingRunPrisma();
+  const ensureExtensions = recordingEnsureExtensions();
+  const extensions = [{ name: 'pg_trgm', schema: 'public' }];
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      cwd: project,
+      env: {},
+      runPrisma,
+      ensureExtensions,
+      projectConfig: { postgresql: { extensions } },
+    });
+
+    assert.equal(summary.success, true);
+    assert.deepEqual(ensureExtensions.calls, [
+      { url: 'postgresql://u:p@localhost/s1', extensions },
+      { url: 'postgresql://u:p@localhost/s2', extensions },
+    ]);
+    assert.deepEqual(
+      runPrisma.commands.map(({ command }) => command),
+      ['db push', 'db push']
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('extension setup failure stops the push fleet before Prisma changes that target', async () => {
+  const project = createProject();
+  const runPrisma = recordingRunPrisma();
+  const ensureExtensions = recordingEnsureExtensions({
+    failUrl: 'postgresql://u:p@localhost/s1',
+  });
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      cwd: project,
+      env: {},
+      runPrisma,
+      ensureExtensions,
+      projectConfig: {
+        postgresql: { extensions: [{ name: 'pg_trgm', schema: 'public' }] },
+      },
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(runPrisma.commands.length, 0);
+    assert.match(summary.results[0].message, /permission denied/);
+    assert.equal(summary.results[1].attempted, false);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('force-reset is blocked when configured extensions would be dropped', async () => {
+  const project = createProject();
+  const runPrisma = recordingRunPrisma();
+  const ensureExtensions = recordingEnsureExtensions();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', 'postgresql://u:p@localhost/s1')],
+      extraArgs: ['--force-reset'],
+      cwd: project,
+      env: { NODE_ENV: 'production' },
+      runPrisma,
+      ensureExtensions,
+      projectConfig: {
+        postgresql: { extensions: [{ name: 'pg_trgm', schema: 'public' }] },
+      },
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(summary.strategy, 'blocked');
+    assert.match(summary.results[0].message, /drops extension objects/);
+    assert.equal(ensureExtensions.calls.length, 0);
+    assert.equal(runPrisma.commands.length, 0);
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
