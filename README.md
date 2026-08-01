@@ -299,6 +299,30 @@ yarn db:update --accept-data-loss   # pushes and accepts the data loss Prisma re
 
 Neither flag is ever *injected* on your behalf, and neither is gated by `NODE_ENV` or an
 opt-in environment variable — an explicit flag is treated as an explicit instruction.
+When `postgresql.extensions` is configured, `--force-reset` is rejected because Prisma
+would drop those extension objects immediately before creating dependent indexes. Remove
+the flag; the normal push fallback provisions the declared extensions idempotently.
+
+#### PostgreSQL extension prerequisites
+
+Projects that use PostgreSQL operator classes, functions, or types supplied by extensions
+can declare those prerequisites once in the source-controlled project config:
+
+```json
+{
+  "postgresql": {
+    "extensions": [
+      { "name": "pg_trgm", "schema": "public" }
+    ]
+  }
+}
+```
+
+Before a migration-less `db push`, the update pipeline connects to each de-duplicated
+database target and runs the equivalent of `CREATE EXTENSION IF NOT EXISTS` inside a
+serialized transaction. It stops the fleet before pushing that target if the extension is
+unavailable, the database role lacks permission, or the extension already belongs to a
+different schema. Committed SQL migrations remain authoritative when migrations exist.
 
 What still applies when you do not pass a destructive flag:
 
