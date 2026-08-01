@@ -299,9 +299,10 @@ yarn db:update --accept-data-loss   # pushes and accepts the data loss Prisma re
 
 Neither flag is ever *injected* on your behalf, and neither is gated by `NODE_ENV` or an
 opt-in environment variable — an explicit flag is treated as an explicit instruction.
-When `postgresql.extensions` is configured, `--force-reset` is rejected because Prisma
-would drop those extension objects immediately before creating dependent indexes. Remove
-the flag; the normal push fallback provisions the declared extensions idempotently.
+When `postgresql.extensions` is configured, the reset remains supported. If Prisma drops
+an extension and the first schema push fails on a dependent index, type, or function, the
+pipeline restores the configured extensions and retries the schema push once without
+resetting the database a second time.
 
 #### PostgreSQL extension prerequisites
 
