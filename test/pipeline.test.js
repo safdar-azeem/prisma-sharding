@@ -281,7 +281,20 @@ test('no pending migrations reports every database as up to date without deployi
     });
 
     assert.equal(summary.success, true);
-    assert.equal(runPrisma.commands.length, 0);
+    assert.equal(
+      runPrisma.commands.filter(({ command }) => command === 'migrate deploy').length,
+      0,
+      'an up-to-date database must not deploy migrations'
+    );
+    assert.equal(
+      runPrisma.commands.filter(({ command }) => command.startsWith('db push')).length,
+      0,
+      'an up-to-date migration-managed database must never fall through to db push'
+    );
+    assert.ok(
+      runPrisma.commands.every(({ command }) => command.startsWith('migrate diff')),
+      'only read-only schema verification may run'
+    );
     assert.deepEqual(
       summary.results.map((result) => result.message),
       ['Already up to date', 'Already up to date']
@@ -1198,7 +1211,7 @@ test('SHARD_STRICT_DRIFT=true turns drift into a failing run', async () => {
     });
 
     assert.equal(summary.success, false);
-    assert.equal(summary.results[0].kind, 'drift');
+    assert.equal(summary.results[0].kind, 'schema-drift');
     assert.equal(summary.results[0].attempted, false, 'nothing was deployed');
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
@@ -1318,6 +1331,29 @@ test('a verified baseline safely records a newly restored bootstrap before exist
     assert.deepEqual(
       runPrisma.commands.map(({ command }) => command),
       [`migrate resolve --applied ${BOOTSTRAP}`, 'migrate deploy']
+    );
+    assert.equal(summary.results[0].message, 'Baselined 1, 1 migration applied');
+
+    const rerunPrisma = recordingRunPrisma();
+    const rerun = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      projectConfig: {
+        migrations: { legacyBaseline: { until: INIT_MIGRATION, verified: true } },
+      },
+      introspect: fakeIntrospect({
+        [url]: states.applied([BOOTSTRAP, INIT_MIGRATION, TICKET_MIGRATION]),
+      }),
+      runPrisma: rerunPrisma,
+    });
+
+    assert.equal(rerun.success, true);
+    assert.equal(rerun.results[0].message, 'Already up to date');
+    assert.deepEqual(
+      rerunPrisma.commands,
+      [],
+      'the adopted bootstrap and later migrations must not execute twice'
     );
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
