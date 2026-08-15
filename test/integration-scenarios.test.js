@@ -10,6 +10,7 @@
  * consecutive idempotent runs.
  */
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -63,6 +64,34 @@ const withSchemaParam = (url, schemaName) => {
   return parsed.toString();
 };
 
+const historyDigest = (migrations) => {
+  const digest = crypto.createHash('sha256');
+  for (const name of Object.keys(migrations).sort()) {
+    const sqlDigest = crypto
+      .createHash('sha256')
+      .update(migrations[name].replace(/\r\n/g, '\n'))
+      .digest('hex');
+    digest.update(name);
+    digest.update('\0');
+    digest.update(sqlDigest);
+    digest.update('\n');
+  }
+  return digest.digest('hex');
+};
+
+const schemaDigest = (filename, contents) => {
+  const digest = crypto.createHash('sha256');
+  const fileDigest = crypto
+    .createHash('sha256')
+    .update(contents.replace(/\r\n/g, '\n'))
+    .digest('hex');
+  digest.update(filename);
+  digest.update('\0');
+  digest.update(fileDigest);
+  digest.update('\n');
+  return digest.digest('hex');
+};
+
 const makeProject = (migrations, config) => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'prisma-sharding-its-'));
   for (const [name, sql] of Object.entries(migrations)) {
@@ -72,10 +101,23 @@ const makeProject = (migrations, config) => {
   }
   fs.writeFileSync(path.join(project, 'prisma', 'schema.prisma'), SCHEMA_PRISMA);
   fs.writeFileSync(path.join(project, 'prisma.config.ts'), PRISMA_CONFIG);
-  if (config) {
+  const effectiveConfig =
+    config === undefined
+      ? {
+          migrations: {
+            bootstrap: {
+              initialMigration: Object.keys(migrations).sort()[0],
+              historyDigest: historyDigest(migrations),
+              schemaDigest: schemaDigest('schema.prisma', SCHEMA_PRISMA),
+              verified: true,
+            },
+          },
+        }
+      : config;
+  if (effectiveConfig) {
     fs.writeFileSync(
       path.join(project, 'prisma-sharding.config.json'),
-      JSON.stringify(config)
+      JSON.stringify(effectiveConfig)
     );
   }
   fs.symlinkSync(
@@ -147,7 +189,7 @@ const withSchemas = async (count, fn) => {
 };
 
 test('an empty database receives every migration and reports success', { skip }, async () => {
-  const project = makeProject({ [INIT]: INIT_SQL });
+  const project = makeProject({ [INIT]: INIT_SQL }, null);
   try {
     await withSchemas(1, async (admin, [schemaName], [url]) => {
       const run = await runUpdate(project, [url]);
@@ -166,15 +208,57 @@ test('an empty database receives every migration and reports success', { skip },
   }
 });
 
+test('a delta-only history fails naturally and halts later empty shards', { skip }, async () => {
+  const DELTA = '20260101000000_delta_only';
+  const project = makeProject({
+    [DELTA]: 'ALTER TABLE "Item" ADD COLUMN "description" TEXT;\n',
+  }, null);
+  try {
+    await withSchemas(2, async (admin, schemaNames, urls) => {
+      const run = await runUpdate(project, urls);
+      assert.equal(run.code, 1);
+      assert.match(`${run.stdout}\n${run.stderr}`, /delta_only|P3018/i);
+      assert.match(run.stdout, /shard_2\s+Not attempted/);
+
+      const firstObjects = await admin.query(
+        `SELECT table_name FROM information_schema.tables
+          WHERE table_schema = $1 AND table_type = 'BASE TABLE'`,
+        [schemaNames[0]]
+      );
+      assert.deepEqual(
+        firstObjects.rows.map((row) => row.table_name),
+        ['_prisma_migrations'],
+        'Prisma retains the failed migration record for explicit recovery'
+      );
+
+      const secondObjects = await admin.query(
+        `SELECT table_name FROM information_schema.tables
+          WHERE table_schema = $1 AND table_type = 'BASE TABLE'`,
+        [schemaNames[1]]
+      );
+      assert.deepEqual(secondObjects.rows, [], 'later shards must remain untouched');
+    });
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test('invalid migration SQL fails with the exact migration name, then recovers via rolled-back', { skip }, async () => {
   const BAD = '20260102000000_bad';
-  const project = makeProject({
-    [INIT]: INIT_SQL,
-    [BAD]: 'ALTER TABLE "Item" ADD COLUMN "broken" SOMETYPE_THAT_DOES_NOT_EXIST;\n',
-  });
+  const project = makeProject({ [INIT]: INIT_SQL });
   try {
     await withSchemas(1, async (admin, [schemaName], [url]) => {
-      // 1. The bad migration fails; the good one before it is applied.
+      // 1. Bootstrap a healthy database, then introduce a bad forward migration.
+      const bootstrapped = await runUpdate(project, [url]);
+      assert.equal(bootstrapped.code, 0, bootstrapped.stdout + bootstrapped.stderr);
+      const badDirectory = path.join(project, 'prisma', 'migrations', BAD);
+      fs.mkdirSync(badDirectory, { recursive: true });
+      fs.writeFileSync(
+        path.join(badDirectory, 'migration.sql'),
+        'ALTER TABLE "Item" ADD COLUMN "broken" SOMETYPE_THAT_DOES_NOT_EXIST;\n'
+      );
+
+      // 2. The forward migration fails without resetting or pushing.
       const failed = await runUpdate(project, [url]);
       assert.equal(failed.code, 1);
       assert.match(failed.stdout, new RegExp(`${BAD} failed`));
@@ -187,12 +271,12 @@ test('invalid migration SQL fails with the exact migration name, then recovers v
       );
       assert.equal(table.rowCount, 1, 'the applied init migration is preserved');
 
-      // 2. The incomplete migration blocks the next run instead of being retried blindly.
+      // 3. The incomplete migration blocks the next run instead of being retried blindly.
       const blocked = await runUpdate(project, [url]);
       assert.equal(blocked.code, 1);
       assert.match(blocked.stdout, /never finished/);
 
-      // 3. Fix the SQL, mark the failed attempt rolled back, rerun: it redeploys.
+      // 4. Fix the SQL, mark the failed attempt rolled back, rerun: it redeploys.
       fs.writeFileSync(
         path.join(project, 'prisma', 'migrations', BAD, 'migration.sql'),
         'ALTER TABLE "Item" ADD COLUMN "fixed" TEXT;\n'

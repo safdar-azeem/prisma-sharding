@@ -209,6 +209,7 @@ SHARD_STUDIO_VERBOSE=false # optional, defaults to false
 SHARD_CLI_VERBOSE=false # optional, verbose update/migrate output
 PRISMA_SHARDING_VERBOSE=false # optional, library lifecycle logs
 SHARD_STRICT_DRIFT=false # optional, make schema drift fail the run (CI/production)
+SHARD_STRICT_BOOTSTRAP=false # optional, require a verified bootstrap contract for empty DBs
 PRISMA_MIGRATIONS_PATH= # optional, migrations directory override
 PRISMA_SCHEMA_PATH= # optional, schema path override for post-apply verification
 ```
@@ -243,9 +244,11 @@ pipeline:
    `migrate resolve --rolled-back` are re-applied, exactly as Prisma documents.
 7. Verifies each database against the Prisma datamodel with `prisma migrate diff
    --exit-code` (Prisma v7 arguments, pre-v7 fallback). Because Prisma can format a
-   semantically equivalent object differently (index operator classes, for example),
-   drift is a **concise grouped warning by default and never blocks startup**; set
-   `SHARD_STRICT_DRIFT=true` (CI/production) to make drift and unverifiable schemas fail.
+   semantically equivalent object differently (index operator classes, for example), drift
+   is a concise grouped warning for existing databases by default; set
+   `SHARD_STRICT_DRIFT=true` (CI/production) to make it blocking. A detected mismatch on a
+   newly initialized database always blocks `Synced`; if verification cannot run, compatible
+   mode reports a warning while strict modes block.
 8. Prints **one quiet `Synced` line per active database** (detailed statuses and the
    Complete summary appear only in verbose mode), and exits non-zero if any database
    failed.
@@ -321,9 +324,9 @@ can declare those prerequisites once in the source-controlled project config:
 }
 ```
 
-Before a migration-less `db push`, the update pipeline connects to each de-duplicated
-database target and runs the equivalent of `CREATE EXTENSION IF NOT EXISTS` inside a
-serialized transaction. It stops the fleet before pushing that target if the extension is
+Before either `db push` or `migrate deploy`, the update pipeline connects to each
+de-duplicated database target and runs the equivalent of `CREATE EXTENSION IF NOT EXISTS`
+inside a serialized transaction. It stops before schema deployment if an extension is
 unavailable, the database role lacks permission, or the extension already belongs to a
 different schema. Committed SQL migrations remain authoritative when migrations exist.
 
@@ -338,17 +341,109 @@ What still applies when you do not pass a destructive flag:
 - A database ahead of the local migrations directory (unknown migrations) blocks the run
   with reconciliation guidance instead of guessing.
 - An applied migration whose local `migration.sql` was edited afterwards (checksum mismatch)
-  blocks the run: the SQL that ran is not the SQL in the working tree. A systemic difference
-  affecting every checksum (line endings, checksum format) is reported as a warning instead
-  of a false block.
+  blocks the run: the SQL that ran is not the SQL in the working tree. LF/CRLF variants are
+  accepted explicitly; checksum differences are never guessed safe.
 - Schema drift is a grouped warning by default — a semantically equivalent object must never
   produce a false failure — and becomes a hard failure with `SHARD_STRICT_DRIFT=true`.
-  Real migration failures, checksum mismatches, and incomplete migrations always fail.
+  A newly initialized database is stricter: an actually detected mismatch between its
+  deployed history and the current datamodel fails instead of reporting `Synced`.
+  Verification unavailability remains a warning unless strict drift/bootstrap verification
+  or an explicit contract is enabled. Real migration failures, checksum mismatches, and
+  incomplete migrations always fail.
 - A migration marked `--rolled-back` is redeployed by the next update (per Prisma's
   documented failed-migration workflow); it is never blocked and the tool never advises
   `--applied` for SQL that still needs to run.
 - Credentials are masked in every URL and command line the CLI prints; detailed Prisma
   output and manual recovery commands appear only under `SHARD_CLI_VERBOSE=true`.
+
+#### Optional strict bootstrap verification
+
+The normal workflow remains unchanged: when committed migrations exist, an empty database
+runs `prisma migrate deploy`, then the resulting fresh schema is compared with the current
+Prisma datamodel when that verification is available. Detected drift fails; unavailable
+verification is a warning in compatible mode. No bootstrap configuration or separate
+verification command is required for ordinary development.
+
+Maintainers who want a stronger CI/release guarantee can opt into a source-controlled
+bootstrap contract:
+
+```json
+{
+  "migrations": {
+    "bootstrap": {
+      "initialMigration": "20260101000000_init",
+      "historyDigest": "<64-character SHA-256>",
+      "schemaDigest": "<64-character SHA-256>",
+      "verified": true
+    }
+  }
+}
+```
+
+- `initialMigration` must be the earliest committed migration and must construct the project
+  schema from zero.
+- `historyDigest` pins every migration name and LF-normalized `migration.sql` file.
+- `schemaDigest` pins the single-file or multi-file Prisma datamodel that was validated.
+- `verified: true` records that the exact history was exercised against an empty, disposable
+  PostgreSQL instance and produced a schema matching that exact datamodel.
+
+When a project commits `migrations.bootstrap`, `db:update` enforces it before initializing
+any empty database. Adding or editing a migration, or changing any `.prisma` file, changes a
+digest; re-run the optional verification workflow and review the new contract. Do not copy
+digests into configuration without validation.
+
+To require a contract even when the project has not configured one, explicitly enable strict
+mode in CI or a release environment:
+
+```bash
+SHARD_STRICT_BOOTSTRAP=true yarn db:update
+```
+
+Without a configured contract or strict mode, migration deployment retains the compatible
+default behavior. Failed migrations remain failed Prisma migrations and block subsequent
+shards; the library never marks them applied or rolled back automatically.
+
+When the optional contract is enabled, runtime `db:update` only checks its fingerprints; it
+never replays migrations in a temporary schema or creates a validation artifact on a real
+database. After the real one-time deployment, fresh-database drift is a hard failure
+regardless of `SHARD_STRICT_DRIFT`.
+
+##### Authoritative verification workflow
+
+Provision a completely empty, disposable PostgreSQL **instance/cluster** that does not share
+a server with any development, staging, or production target. The verifier intentionally
+does not create, reset, or destroy infrastructure because arbitrary custom SQL can contain
+cluster-level operations.
+
+```bash
+PRISMA_SHARDING_BOOTSTRAP_DATABASE_URL="postgresql://.../disposable" \
+  npx prisma-sharding-verify-bootstrap --yes --disposable
+```
+
+The command:
+
+1. refuses configured runtime targets on the same PostgreSQL endpoint;
+2. confirms the supplied validation target is empty;
+3. provisions configured PostgreSQL extensions;
+4. runs the complete migration history once;
+5. requires a clean `prisma migrate diff` against the current datamodel; and
+6. prints the reviewed `migrations.bootstrap` JSON only after success.
+
+The disposable environment is left intact for inspection and must then be destroyed by the
+operator/CI job. A failed verification never emits a valid contract. CI should provision a
+fresh PostgreSQL service/container for every verification run.
+
+When adding a new shard later, the ordinary `yarn db:update` deploys the committed history to
+that empty shard while current shards skip already applied migrations. If the project opted
+into a bootstrap contract, revalidate and update it after changing migrations or the
+datamodel before initializing the new shard.
+
+`migrations.bootstrap` and `migrations.legacyBaseline` solve different problems:
+
+- `bootstrap` proves an empty database can run the exact complete history to the exact current
+  datamodel;
+- `legacyBaseline` records migrations already represented by a pre-migration `db push`
+  database, without executing their SQL.
 
 #### Legacy databases (`db push`-built, no migration history)
 
@@ -410,16 +505,16 @@ without running any SQL, altering any schema, or deleting any data:
 # Print the plan (changes nothing, opens no connections):
 npx prisma-sharding-baseline --until <cutoff_migration>
 
-# Execute it:
-npx prisma-sharding-baseline --until <cutoff_migration> --yes
+# Execute it after verification:
+npx prisma-sharding-baseline --until <cutoff_migration> --yes --verified
 ```
 
 A baselined migration **never has its SQL executed**, so the cutoff should be verified, not
 guessed: every migration up to and including `--until` must already be fully represented in
 every target database — its schema changes *and* its data effects (backfills, corrections,
-custom SQL). Adding `--verified` acknowledges that and silences the reminder; it is not a
-gate — `--yes` alone executes. Schema effects can be probed via `information_schema`; data
-effects require reading each migration.
+custom SQL). Schema effects can be probed via `information_schema`; data effects require
+reading each migration. Both `--yes` and `--verified` are required to acknowledge that
+verification and write history; without either flag the command changes nothing.
 
 Execution is two-phase: first a **read-only preflight of every selected database** (state,
 history consistency, checksums) — if any target is unreachable or inconsistent, nothing is

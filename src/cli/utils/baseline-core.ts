@@ -4,7 +4,7 @@ import { IntrospectFn, introspectDatabase } from './introspect';
 import { classifyMigrationState, isBlockingState } from './migration-state';
 import {
   readLocalMigrationChecksums,
-  readLocalMigrations,
+  readLocalMigrationHistory,
   resolveMigrationsDirectory,
 } from './migrations';
 import { printCliHeader, printCliRow } from './output';
@@ -130,7 +130,15 @@ export const runBaselineCli = async (options: BaselineCliOptions = {}): Promise<
     return 1;
   }
 
-  const localMigrations = readLocalMigrations(directory.path);
+  const localHistory = readLocalMigrationHistory(directory.path);
+  if (localHistory.errors.length > 0) {
+    printCliRow('❌', 'migrations', 'Committed migration history is structurally invalid.');
+    for (const error of localHistory.errors) {
+      console.log(`    ${error}`);
+    }
+    return 1;
+  }
+  const localMigrations = localHistory.migrations;
   const cutoffIndex = localMigrations.indexOf(args.until);
 
   if (cutoffIndex === -1) {
@@ -204,15 +212,17 @@ export const runBaselineCli = async (options: BaselineCliOptions = {}): Promise<
     return 0;
   }
 
-  // Recording a migration as applied permanently skips its SQL. `--verified` is
-  // an optional acknowledgement, not a gate: --yes is enough to execute.
+  // Recording a migration as applied permanently skips its SQL. Require the
+  // explicit verification attestation; never turn a dry-run plan into writes
+  // based on confirmation alone.
   if (!args.verified) {
+    printCliRow('❌', 'verification', '--verified is required with --yes.');
     printCliRow(
       'ℹ️',
-      'note',
-      `Baselined migrations never run their SQL. Confirm every migration up to ${args.until}`
+      'safe',
+      'Nothing was changed. Verify schema and data effects on every target first.'
     );
-    printCliRow('ℹ️', '', 'is already represented in each target (schema AND data effects).');
+    return 1;
   }
 
   // Phase 1: read-only preflight of every selected target. Nothing is written
@@ -249,7 +259,7 @@ export const runBaselineCli = async (options: BaselineCliOptions = {}): Promise<
       localChecksums,
     });
 
-    if (state.kind === 'new' || (introspection.reachable && introspection.empty)) {
+    if (state.kind === 'new') {
       plans.push({
         target,
         action: 'skip',

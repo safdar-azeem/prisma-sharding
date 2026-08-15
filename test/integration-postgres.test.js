@@ -28,6 +28,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 const INIT = '20260101000000_init';
 const TICKET = '20260724000200_task_ticket_number';
+const DELTA_ONLY = '20260729000100_delta_only';
 
 const INIT_SQL = `
 CREATE TABLE "PmProject" (
@@ -265,6 +266,52 @@ test('legacy db-push shard adopts migrations, keeps data, backfills tickets, and
     assert.equal(rerun.code, 0, `rerun failed:\n${rerun.stdout}\n${rerun.stderr}`);
     assert.match(rerun.stdout, /Synced/);
     assert.doesNotMatch(rerun.stdout, /Already up to date|Complete/);
+  } finally {
+    await admin.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch(() => undefined);
+    await admin.end().catch(() => undefined);
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap verifier cannot attest a real delta-only history on empty PostgreSQL', { skip }, async () => {
+  const { Client } = require('pg');
+  const schemaName = `ps_delta_${Date.now()}`;
+  const validationUrl = withSchemaParam(BASE_URL, schemaName);
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'prisma-sharding-delta-it-'));
+  const migrationDirectory = path.join(project, 'prisma', 'migrations', DELTA_ONLY);
+  fs.mkdirSync(migrationDirectory, { recursive: true });
+  fs.writeFileSync(
+    path.join(migrationDirectory, 'migration.sql'),
+    'ALTER TABLE "PreExisting" ADD COLUMN "newValue" TEXT;\n'
+  );
+  fs.writeFileSync(
+    path.join(project, 'prisma', 'schema.prisma'),
+    `datasource db {\n  provider = "postgresql"\n  url = env("DATABASE_URL")\n}\n\nmodel PreExisting {\n  id String @id\n  newValue String?\n}\n`
+  );
+  fs.writeFileSync(path.join(project, 'prisma.config.ts'), PRISMA_CONFIG);
+  fs.symlinkSync(
+    path.join(REPO_ROOT, 'node_modules'),
+    path.join(project, 'node_modules'),
+    'junction'
+  );
+
+  const admin = new Client({ connectionString: BASE_URL });
+  await admin.connect();
+  try {
+    await admin.query(`CREATE SCHEMA "${schemaName}"`);
+    const result = await runCli(
+      'verify-bootstrap.js',
+      {
+        DATABASE_URL: '',
+        PRISMA_SHARDING_BOOTSTRAP_DATABASE_URL: validationUrl,
+      },
+      ['--yes', '--disposable'],
+      project
+    );
+
+    assert.equal(result.code, 1);
+    assert.match(`${result.stdout}\n${result.stderr}`, /migration deployment failed|P3018/i);
+    assert.doesNotMatch(result.stdout, /"verified": true/);
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch(() => undefined);
     await admin.end().catch(() => undefined);

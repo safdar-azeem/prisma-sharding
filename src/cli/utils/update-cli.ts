@@ -52,9 +52,11 @@ export const runUpdateCli = async (options: UpdateCliOptions): Promise<number> =
     return 1;
   }
 
-  if (verbose && duplicates.length > 0) {
+  if (duplicates.length > 0) {
     for (const duplicate of duplicates) {
-      console.log(
+      printCliRow(
+        'ℹ️',
+        'duplicate',
         `${duplicate.source} resolves to the same database as ${duplicate.sameAs}; updating once.`
       );
     }

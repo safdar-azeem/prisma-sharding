@@ -1,6 +1,6 @@
 {
   "name": "prisma-sharding",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Lightweight database sharding library for Prisma with connection pooling and health monitoring",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -22,6 +22,7 @@
     "prisma-sharding-update": "./dist/cli/update.js",
     "prisma-sharding-migrate": "./dist/cli/migrate.js",
     "prisma-sharding-baseline": "./dist/cli/baseline.js",
+    "prisma-sharding-verify-bootstrap": "./dist/cli/verify-bootstrap.js",
     "prisma-sharding-push": "./dist/cli/push.js",
     "prisma-studio-next": "./dist/cli/studio.js",
     "prisma-sharding-test": "./dist/cli/test.js"
@@ -44,7 +45,7 @@
   "scripts": {
     "build": "yarn build:lib && yarn build:cli && yarn build:studio-host && yarn build:studio-shell",
     "build:lib": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "build:cli": "tsup src/cli/update.ts src/cli/migrate.ts src/cli/baseline.ts src/cli/push.ts src/cli/studio.ts src/cli/test.ts src/cli/utils/command.ts src/cli/utils/postgres.ts src/cli/utils/postgresExtensions.ts src/cli/utils/pipeline.ts src/cli/utils/update-cli.ts src/cli/utils/baseline-core.ts src/cli/utils/config.ts src/cli/utils/studio-registry.ts src/cli/utils/studio-options.ts src/cli/utils/shards.ts src/cli/utils/migrations.ts src/cli/utils/migration-state.ts src/cli/utils/introspect.ts src/cli/utils/unsafe-push.ts src/cli/utils/prisma.ts --format cjs --outDir dist/cli --clean",
+    "build:cli": "tsup src/cli/update.ts src/cli/migrate.ts src/cli/baseline.ts src/cli/verify-bootstrap.ts src/cli/push.ts src/cli/studio.ts src/cli/test.ts src/cli/utils/command.ts src/cli/utils/postgres.ts src/cli/utils/postgresExtensions.ts src/cli/utils/pipeline.ts src/cli/utils/update-cli.ts src/cli/utils/baseline-core.ts src/cli/utils/bootstrap-verify-core.ts src/cli/utils/config.ts src/cli/utils/studio-registry.ts src/cli/utils/studio-options.ts src/cli/utils/shards.ts src/cli/utils/migrations.ts src/cli/utils/migration-state.ts src/cli/utils/introspect.ts src/cli/utils/unsafe-push.ts src/cli/utils/prisma.ts --format cjs --outDir dist/cli --clean",
     "build:studio-host": "tsup src/studio-host/index.ts --format cjs,esm --dts --outDir dist/studio-host",
     "build:studio-shell": "node scripts/buildStudioHostAssets.mjs",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",

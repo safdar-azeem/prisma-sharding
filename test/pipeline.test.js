@@ -7,6 +7,13 @@ const test = require('node:test');
 const { DESTRUCTIVE_FLAGS, runDatabaseUpdate } = require(
   path.resolve(__dirname, '../dist/cli/utils/pipeline.js')
 );
+const {
+  readLocalMigrationChecksums,
+  readLocalMigrationHistory,
+  readLocalMigrationHistoryDigest,
+  readPrismaSchemaDigest,
+  resolveSchemaPath,
+} = require(path.resolve(__dirname, '../dist/cli/utils/migrations.js'));
 const { runUpdateCli } = require(path.resolve(__dirname, '../dist/cli/utils/update-cli.js'));
 const {
   getDatabaseTargets,
@@ -41,6 +48,21 @@ const createProject = (migrationNames = [], withSchema = false) => {
   }
   return directory;
 };
+
+const bootstrapProjectConfig = (project, initialMigration) => ({
+  migrations: {
+    bootstrap: {
+      initialMigration,
+      historyDigest: readLocalMigrationHistoryDigest(
+        path.join(project, 'prisma', 'migrations')
+      ),
+      schemaDigest: resolveSchemaPath(project, {})
+        ? readPrismaSchemaDigest(resolveSchemaPath(project, {}))
+        : '0'.repeat(64),
+      verified: true,
+    },
+  },
+});
 
 /** Introspection fixtures. */
 const states = {
@@ -151,7 +173,7 @@ const assertNoDestructiveFlags = (runPrisma) => {
 };
 
 test('a pending migration is deployed to every shard in order', async () => {
-  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION]);
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION], true);
   const urls = {
     'postgresql://u:p@localhost/s1': states.applied([INIT_MIGRATION]),
     'postgresql://u:p@localhost/s2': states.applied([INIT_MIGRATION]),
@@ -239,7 +261,7 @@ test('the ticket-number migration path: populated tables use migrate deploy, nev
 });
 
 test('no pending migrations reports every database as up to date without deploying', async () => {
-  const project = createProject([TICKET_MIGRATION]);
+  const project = createProject([TICKET_MIGRATION], true);
   const urls = {
     'postgresql://u:p@localhost/s1': states.applied([TICKET_MIGRATION]),
     'postgresql://u:p@localhost/s2': states.applied([TICKET_MIGRATION]),
@@ -311,7 +333,7 @@ test('normal update output stays quiet: Synced only, skipped primary hidden', as
 });
 
 test('empty primary DATABASE_URL is skipped when shards are configured', async () => {
-  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION]);
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION], true);
   const urls = {
     'postgresql://u:p@localhost/main': states.emptyDatabase(),
     'postgresql://u:p@localhost/s1': states.pushBuilt(),
@@ -361,6 +383,283 @@ test('empty primary DATABASE_URL is skipped when shards are configured', async (
     );
   } finally {
     console.log = originalLog;
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('an empty shard is deployed only after the complete history passes bootstrap validation', async () => {
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION], true);
+  const url = 'postgresql://u:p@localhost/s1?schema=tenant_one';
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+      projectConfig: bootstrapProjectConfig(project, INIT_MIGRATION),
+    });
+
+    assert.equal(summary.success, true);
+    assert.deepEqual(
+      runPrisma.commands.filter(({ command }) => command === 'migrate deploy').map(({ url }) => url),
+      [url]
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap contract validation performs no extra migration execution on a real database', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const targetUrl = 'postgresql://u:p@localhost/s1?schema=tenant_one';
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', targetUrl)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [targetUrl]: states.emptyDatabase() }),
+      runPrisma,
+      projectConfig: bootstrapProjectConfig(project, INIT_MIGRATION),
+    });
+
+    assert.equal(summary.success, true);
+    assert.deepEqual(
+      runPrisma.commands.map(({ command, url }) => [command, url]),
+      [
+        ['migrate deploy', targetUrl],
+        [
+          'migrate diff --from-config-datasource --to-schema ' +
+            path.join(project, 'prisma', 'schema.prisma') +
+            ' --exit-code',
+          targetUrl,
+        ],
+      ]
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('an empty database without bootstrap configuration keeps the compatible deploy flow', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const urls = {
+    'postgresql://u:p@localhost/s1': states.emptyDatabase(),
+    'postgresql://u:p@localhost/s2': states.emptyDatabase(),
+  };
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect(urls),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, true);
+    assert.equal(summary.strategy, 'migrate');
+    assert.equal(
+      runPrisma.commands.filter(({ command }) => command === 'migrate deploy').length,
+      2
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('strict bootstrap mode blocks every empty shard when no contract is configured', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const urls = {
+    'postgresql://u:p@localhost/s1': states.emptyDatabase(),
+    'postgresql://u:p@localhost/s2': states.emptyDatabase(),
+  };
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      cwd: project,
+      env: { SHARD_STRICT_BOOTSTRAP: 'true' },
+      introspect: fakeIntrospect(urls),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(summary.strategy, 'blocked');
+    assert.ok(summary.results.every((result) => result.kind === 'bootstrap-invalid'));
+    assert.ok(summary.results.every((result) => result.attempted === false));
+    assert.match(summary.results[0].message, /verified bootstrap contract/);
+    assert.equal(runPrisma.commands.length, 0);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('default mode deploys an empty database when optional schema verification is unavailable', async () => {
+  const project = createProject([INIT_MIGRATION]);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, true);
+    assert.equal(
+      runPrisma.commands.filter(({ command }) => command === 'migrate deploy').length,
+      1
+    );
+    assert.deepEqual(
+      summary.warnings.filter(({ kind }) => kind === 'verify').map(({ id }) => id),
+      ['shard_1']
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('strict drift mode blocks an unverifiable empty database before migration SQL', async () => {
+  const project = createProject([INIT_MIGRATION]);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: { SHARD_STRICT_DRIFT: 'true' },
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(summary.results[0].kind, 'verification-error');
+    assert.match(summary.results[0].message, /strict drift verification/i);
+    assert.equal(runPrisma.commands.length, 0);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('an explicit bootstrap contract requires a resolvable schema fingerprint', async () => {
+  const project = createProject([INIT_MIGRATION]);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+      projectConfig: bootstrapProjectConfig(project, INIT_MIGRATION),
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(summary.results[0].kind, 'bootstrap-invalid');
+    assert.match(summary.results[0].message, /schema path could not be resolved/i);
+    assert.equal(runPrisma.commands.length, 0);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('a changed migration invalidates the verified bootstrap contract before deployment', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+  const config = bootstrapProjectConfig(project, INIT_MIGRATION);
+  config.migrations.bootstrap.historyDigest = '0'.repeat(64);
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+      projectConfig: config,
+    });
+
+    assert.equal(summary.success, false);
+    assert.match(summary.results[0].message, /changed after bootstrap validation/i);
+    assert.equal(runPrisma.commands.length, 0);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('a changed Prisma datamodel invalidates the bootstrap contract before deployment', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+  const config = bootstrapProjectConfig(project, INIT_MIGRATION);
+  fs.writeFileSync(path.join(project, 'prisma', 'schema.prisma'), '// changed schema\n');
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+      projectConfig: config,
+    });
+
+    assert.equal(summary.success, false);
+    assert.match(summary.results[0].message, /datamodel changed/i);
+    assert.equal(runPrisma.commands.length, 0);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('a new empty shard joins a current fleet through the same validated history', async () => {
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION], true);
+  const urls = {
+    'postgresql://u:p@localhost/s1': states.applied([INIT_MIGRATION, TICKET_MIGRATION]),
+    'postgresql://u:p@localhost/s2': states.emptyDatabase(),
+  };
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [
+        target('shard_1', 'postgresql://u:p@localhost/s1'),
+        target('shard_2', 'postgresql://u:p@localhost/s2'),
+      ],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect(urls),
+      runPrisma,
+      projectConfig: bootstrapProjectConfig(project, INIT_MIGRATION),
+    });
+
+    assert.equal(summary.success, true);
+    assert.deepEqual(
+      runPrisma.commands.filter(({ command }) => command === 'migrate deploy').map(({ url }) => url),
+      ['postgresql://u:p@localhost/s2']
+    );
+    assert.equal(summary.results[0].message, 'Already up to date');
+  } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
 });
@@ -553,6 +852,66 @@ test('the push fallback provisions configured extensions before each database pu
   }
 });
 
+test('the migration path provisions configured extensions before migrate deploy', async () => {
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION]);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+  const ensureExtensions = recordingEnsureExtensions();
+  const extensions = [{ name: 'pg_trgm', schema: 'public' }];
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.applied([INIT_MIGRATION]) }),
+      runPrisma,
+      ensureExtensions,
+      projectConfig: { postgresql: { extensions } },
+    });
+
+    assert.equal(summary.success, true);
+    assert.deepEqual(ensureExtensions.calls, [{ url, extensions }]);
+    assert.equal(
+      runPrisma.commands.filter(({ command }) => command === 'migrate deploy').length,
+      1
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('extension setup failure blocks migrate deploy and later shards', async () => {
+  const project = createProject([INIT_MIGRATION, TICKET_MIGRATION]);
+  const firstUrl = 'postgresql://u:p@localhost/s1';
+  const secondUrl = 'postgresql://u:p@localhost/s2';
+  const runPrisma = recordingRunPrisma();
+  const ensureExtensions = recordingEnsureExtensions({ failUrl: firstUrl });
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', firstUrl), target('shard_2', secondUrl)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({
+        [firstUrl]: states.applied([INIT_MIGRATION]),
+        [secondUrl]: states.applied([INIT_MIGRATION]),
+      }),
+      runPrisma,
+      ensureExtensions,
+      projectConfig: {
+        postgresql: { extensions: [{ name: 'pg_trgm', schema: 'public' }] },
+      },
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(runPrisma.commands.length, 0);
+    assert.equal(summary.results[1].attempted, false);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test('extension setup failure stops the push fleet before Prisma changes that target', async () => {
   const project = createProject();
   const runPrisma = recordingRunPrisma();
@@ -688,6 +1047,111 @@ const driftRunPrisma = () => {
   fn.commands = commands;
   return fn;
 };
+
+test('fresh databases fail when deployed history differs from the current datamodel', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const firstUrl = 'postgresql://u:p@localhost/s1';
+  const secondUrl = 'postgresql://u:p@localhost/s2';
+  const runPrisma = driftRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', firstUrl), target('shard_2', secondUrl)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({
+        [firstUrl]: states.emptyDatabase(),
+        [secondUrl]: states.emptyDatabase(),
+      }),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(summary.results[0].kind, 'drift');
+    assert.match(summary.results[0].message, /differs from the Prisma datamodel/);
+    assert.equal(summary.results[1].attempted, false);
+    assert.equal(
+      runPrisma.commands.filter((command) => command === 'migrate deploy').length,
+      1,
+      'a fresh-schema verification failure must halt later shards'
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('fresh verification command errors warn in compatible mode instead of blocking deployment', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const url = 'postgresql://u:p@localhost/s1';
+  const commands = [];
+  const runPrisma = async (args) => {
+    const command = args.join(' ');
+    commands.push(command);
+    if (command.startsWith('migrate diff')) {
+      return {
+        success: false,
+        stdout: '',
+        stderr: 'Prisma schema comparison unavailable',
+        exitCode: 1,
+        error: 'Prisma schema comparison unavailable',
+      };
+    }
+    return { success: true, stdout: '', stderr: '', exitCode: 0 };
+  };
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, true);
+    assert.ok(commands.includes('migrate deploy'));
+    assert.match(
+      summary.warnings.find(({ kind }) => kind === 'verify')?.message || '',
+      /comparison unavailable/i
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('an opted-in bootstrap contract makes fresh verification errors blocking', async () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = async (args) => {
+    if (args.join(' ').startsWith('migrate diff')) {
+      return {
+        success: false,
+        stdout: '',
+        stderr: 'Prisma schema comparison unavailable',
+        exitCode: 1,
+        error: 'Prisma schema comparison unavailable',
+      };
+    }
+    return { success: true, stdout: '', stderr: '', exitCode: 0 };
+  };
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      introspect: fakeIntrospect({ [url]: states.emptyDatabase() }),
+      runPrisma,
+      projectConfig: bootstrapProjectConfig(project, INIT_MIGRATION),
+    });
+
+    assert.equal(summary.success, false);
+    assert.equal(summary.results[0].kind, 'verify');
+    assert.match(summary.results[0].message, /comparison unavailable/i);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
 
 test('schema drift is a grouped warning by default, never a false failure', async () => {
   const project = createProject([INIT_MIGRATION, TICKET_MIGRATION], true);
@@ -826,6 +1290,34 @@ test('a verified legacyBaseline config adopts legacy shards inside one run', asy
         'migrate deploy',
       ],
       'baseline is recorded, later migrations run their real SQL'
+    );
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('a verified baseline safely records a newly restored bootstrap before existing history', async () => {
+  const BOOTSTRAP = '20251231000000_bootstrap';
+  const project = createProject([BOOTSTRAP, INIT_MIGRATION, TICKET_MIGRATION]);
+  const url = 'postgresql://u:p@localhost/s1';
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const summary = await runDatabaseUpdate({
+      targets: [target('shard_1', url)],
+      cwd: project,
+      env: {},
+      projectConfig: {
+        migrations: { legacyBaseline: { until: INIT_MIGRATION, verified: true } },
+      },
+      introspect: fakeIntrospect({ [url]: states.applied([INIT_MIGRATION]) }),
+      runPrisma,
+    });
+
+    assert.equal(summary.success, true);
+    assert.deepEqual(
+      runPrisma.commands.map(({ command }) => command),
+      [`migrate resolve --applied ${BOOTSTRAP}`, 'migrate deploy']
     );
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
@@ -1089,9 +1581,6 @@ test('legacy helpers are thin wrappers over the shared pipeline', () => {
 const { classifyMigrationState, isBlockingState } = require(
   path.resolve(__dirname, '../dist/cli/utils/migration-state.js')
 );
-const { readLocalMigrationChecksums } = require(
-  path.resolve(__dirname, '../dist/cli/utils/migrations.js')
-);
 const crypto = require('node:crypto');
 
 const row = (name, overrides = {}) => ({
@@ -1128,6 +1617,23 @@ test('a rolled-back migration stays deployable instead of being blocked', () => 
   assert.doesNotMatch(state.reconciliation.join('\n'), /--applied/);
 });
 
+test('an unfinished migration is blocked and only offers explicit Prisma recovery', () => {
+  const state = classifyMigrationState({
+    targetId: 'shard_1',
+    introspection: introspectionWith([
+      row(INIT_MIGRATION),
+      row(TICKET_MIGRATION, { finishedAt: null, rolledBackAt: null }),
+    ]),
+    localMigrations: [INIT_MIGRATION, TICKET_MIGRATION],
+  });
+
+  assert.equal(state.kind, 'failed-migration');
+  assert.equal(isBlockingState(state.kind), true);
+  assert.match(state.summary, /started but never finished/);
+  assert.match(state.reconciliation.join('\n'), /resolve --rolled-back/);
+  assert.match(state.reconciliation.join('\n'), /ONLY if you manually completed/);
+});
+
 test('an edited applied migration is detected by checksum and blocks the run', () => {
   const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
   const state = classifyMigrationState({
@@ -1149,7 +1655,7 @@ test('an edited applied migration is detected by checksum and blocks the run', (
   assert.match(state.reconciliation.join('\n'), /edited after/);
 });
 
-test('a systemic checksum difference is a warning, not a false block', () => {
+test('all checksum differences still block because edited history is never guessed safe', () => {
   const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
   const names = ['20260101000000_a', '20260102000000_b', '20260103000000_c'];
   const state = classifyMigrationState({
@@ -1161,8 +1667,39 @@ test('a systemic checksum difference is a warning, not a false block', () => {
     localChecksums: Object.fromEntries(names.map((name) => [name, [sha(`local:${name}`)]])),
   });
 
-  assert.equal(state.kind, 'up-to-date');
-  assert.match(state.warnings.join('\n'), /checksum validation was skipped/);
+  assert.equal(state.kind, 'history-mismatch');
+  assert.equal(isBlockingState(state.kind), true);
+  assert.match(state.summary, /3 applied migrations differ/);
+});
+
+test('a missing migration before recorded history requires explicit baseline adoption', () => {
+  const BOOTSTRAP = '20251231000000_bootstrap';
+  const state = classifyMigrationState({
+    targetId: 'shard_1',
+    introspection: introspectionWith([row(INIT_MIGRATION), row(TICKET_MIGRATION)]),
+    localMigrations: [BOOTSTRAP, INIT_MIGRATION, TICKET_MIGRATION],
+  });
+
+  assert.equal(state.kind, 'baseline-required');
+  assert.deepEqual(state.baselineCandidates, [BOOTSTRAP]);
+  assert.equal(isBlockingState(state.kind), true);
+});
+
+test('an unknown rolled-back migration remains divergent history', () => {
+  const state = classifyMigrationState({
+    targetId: 'shard_1',
+    introspection: introspectionWith([
+      row(INIT_MIGRATION),
+      row('20260102000000_missing_locally', {
+        finishedAt: null,
+        rolledBackAt: new Date(),
+      }),
+    ]),
+    localMigrations: [INIT_MIGRATION],
+  });
+
+  assert.equal(state.kind, 'unknown-migrations');
+  assert.equal(isBlockingState(state.kind), true);
 });
 
 test('local checksums include an LF-normalised variant for CRLF files', () => {
@@ -1178,6 +1715,99 @@ test('local checksums include an LF-normalised variant for CRLF files', () => {
     assert.equal(checksums[name].length, 2);
     assert.ok(checksums[name].includes(sha('SELECT 1;\r\nSELECT 2;\r\n')));
     assert.ok(checksums[name].includes(sha('SELECT 1;\nSELECT 2;\n')));
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap history digest is CRLF-stable and changes with migration content', () => {
+  const project = createProject([INIT_MIGRATION]);
+  const migrationFile = path.join(
+    project,
+    'prisma',
+    'migrations',
+    INIT_MIGRATION,
+    'migration.sql'
+  );
+
+  try {
+    fs.writeFileSync(migrationFile, 'SELECT 1;\r\nSELECT 2;\r\n');
+    const crlf = readLocalMigrationHistoryDigest(path.join(project, 'prisma', 'migrations'));
+    fs.writeFileSync(migrationFile, 'SELECT 1;\nSELECT 2;\n');
+    const lf = readLocalMigrationHistoryDigest(path.join(project, 'prisma', 'migrations'));
+    fs.writeFileSync(migrationFile, 'SELECT 1;\nSELECT 3;\n');
+    const edited = readLocalMigrationHistoryDigest(path.join(project, 'prisma', 'migrations'));
+
+    assert.equal(crlf, lf);
+    assert.notEqual(lf, edited);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('migration history ordering is deterministic and malformed directories are reported', () => {
+  const project = createProject([]);
+  const root = path.join(project, 'prisma', 'migrations');
+  fs.mkdirSync(path.join(root, '20260102000000_B'), { recursive: true });
+  fs.writeFileSync(path.join(root, '20260102000000_B', 'migration.sql'), 'SELECT 2;\n');
+  fs.mkdirSync(path.join(root, '20260101000000_a'), { recursive: true });
+  fs.writeFileSync(path.join(root, '20260101000000_a', 'migration.sql'), 'SELECT 1;\n');
+  fs.mkdirSync(path.join(root, '20260103000000_missing_sql'), { recursive: true });
+
+  try {
+    const history = readLocalMigrationHistory(root);
+    assert.deepEqual(history.migrations, [
+      '20260101000000_a',
+      '20260102000000_B',
+    ]);
+    assert.match(history.errors.join('\n'), /has no migration.sql/);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('custom Prisma schema paths are resolved from prisma.config.ts literals', () => {
+  const project = createProject([INIT_MIGRATION]);
+  const customSchema = path.join(project, 'database', 'prisma-schema');
+  fs.mkdirSync(customSchema, { recursive: true });
+  fs.writeFileSync(path.join(customSchema, 'base.prisma'), '// custom schema\n');
+  fs.writeFileSync(
+    path.join(project, 'prisma.config.ts'),
+    `export default { schema: 'database/prisma-schema' }\n`
+  );
+
+  try {
+    assert.equal(resolveSchemaPath(project, {}), customSchema);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('a missing configured schema path does not silently fall back to prisma/schema', () => {
+  const project = createProject([INIT_MIGRATION], true);
+  fs.writeFileSync(
+    path.join(project, 'prisma.config.ts'),
+    `export default { schema: 'missing/schema.prisma' }\n`
+  );
+
+  try {
+    assert.equal(resolveSchemaPath(project, {}), undefined);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('a dynamic configured schema path is reported unresolved unless explicitly overridden', () => {
+  const project = createProject([INIT_MIGRATION], true);
+  const override = path.join(project, 'prisma', 'schema.prisma');
+  fs.writeFileSync(
+    path.join(project, 'prisma.config.ts'),
+    `export default { schema: process.env.CUSTOM_SCHEMA }\n`
+  );
+
+  try {
+    assert.equal(resolveSchemaPath(project, {}), undefined);
+    assert.equal(resolveSchemaPath(project, { PRISMA_SCHEMA_PATH: override }), override);
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }

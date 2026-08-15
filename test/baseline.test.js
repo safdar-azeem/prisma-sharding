@@ -68,6 +68,21 @@ const states = {
       },
     ],
   },
+  failedOnEmptySchema: {
+    reachable: true,
+    empty: true,
+    hasMigrationsTable: true,
+    databaseMissing: false,
+    userTableCount: 0,
+    applied: [
+      {
+        name: INIT,
+        checksum: null,
+        finishedAt: null,
+        rolledBackAt: null,
+      },
+    ],
+  },
 };
 
 const fakeIntrospect = (byUrl) => {
@@ -133,7 +148,7 @@ test('dry run prints the plan without touching any database', async () => {
   }
 });
 
-test('--yes alone executes; --verified is an acknowledgement, not a gate', async () => {
+test('--yes without --verified is rejected before database preflight', async () => {
   const project = createProject();
   const introspect = fakeIntrospect({
     'postgresql://u:p@localhost/s1': states.pushBuilt,
@@ -150,12 +165,9 @@ test('--yes alone executes; --verified is an acknowledgement, not a gate', async
       runPrisma,
     });
 
-    assert.equal(code, 0);
-    assert.equal(introspect.calls.length, 2);
-    assert.deepEqual(
-      runPrisma.commands.map(({ command }) => command),
-      [`migrate resolve --applied ${INIT}`, `migrate resolve --applied ${INIT}`]
-    );
+    assert.equal(code, 1);
+    assert.equal(introspect.calls.length, 0);
+    assert.equal(runPrisma.commands.length, 0);
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
@@ -291,6 +303,30 @@ test('empty databases are skipped so db:update builds them from the full history
     assert.deepEqual(runPrisma.commands.map(({ url }) => url), [
       'postgresql://u:p@localhost/s2',
     ]);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('an empty schema with an unfinished migration blocks baseline writes everywhere', async () => {
+  const project = createProject();
+  const introspect = fakeIntrospect({
+    'postgresql://u:p@localhost/s1': states.failedOnEmptySchema,
+    'postgresql://u:p@localhost/s2': states.pushBuilt,
+  });
+  const runPrisma = recordingRunPrisma();
+
+  try {
+    const code = await runBaselineCli({
+      argv: ['--until', INIT, '--yes', '--verified'],
+      env: ENV,
+      cwd: project,
+      introspect,
+      runPrisma,
+    });
+
+    assert.equal(code, 1);
+    assert.equal(runPrisma.commands.length, 0);
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }

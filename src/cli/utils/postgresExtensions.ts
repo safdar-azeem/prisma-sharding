@@ -45,7 +45,7 @@ const validateExtensions = (
 
 /**
  * Ensures source-controlled PostgreSQL prerequisites exist before Prisma's
- * migration-less db-push fallback creates objects that depend on them.
+ * schema push or committed migrations create objects that depend on them.
  *
  * Extension DDL is serialized per physical database so concurrent application
  * deployments cannot race one another. A different existing owner schema is a

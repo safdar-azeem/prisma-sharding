@@ -5,9 +5,12 @@ export type MigrationStateKind =
   | 'pending'
   | 'up-to-date'
   | 'baseline-required'
+  | 'bootstrap-invalid'
   | 'failed-migration'
   | 'unknown-migrations'
   | 'history-mismatch'
+  | 'schema-drift'
+  | 'verification-error'
   | 'absent'
   | 'unreachable';
 
@@ -16,6 +19,8 @@ export interface MigrationState {
   summary: string;
   pending: string[];
   reconciliation: string[];
+  /** Missing historical records that a verified legacy baseline may adopt. */
+  baselineCandidates: string[];
   /** Non-fatal observations, printed but never blocking. */
   warnings: string[];
 }
@@ -34,9 +39,12 @@ export interface ClassifyOptions {
  */
 export const BLOCKING_STATES: MigrationStateKind[] = [
   'baseline-required',
+  'bootstrap-invalid',
   'failed-migration',
   'unknown-migrations',
   'history-mismatch',
+  'schema-drift',
+  'verification-error',
   'absent',
   'unreachable',
 ];
@@ -121,6 +129,7 @@ export const classifyMigrationState = ({
         'The server is reachable but this database has not been created.',
         'Either create it, or point the variable at an existing database.',
       ],
+      baselineCandidates: [],
       warnings: [],
     };
   }
@@ -134,6 +143,7 @@ export const classifyMigrationState = ({
         'Verify the connection string, network access and database availability.',
         'No migration was attempted against any database.',
       ],
+      baselineCandidates: [],
       warnings: [],
     };
   }
@@ -147,11 +157,13 @@ export const classifyMigrationState = ({
         'The database answered but its migration history could not be read.',
         'Check the connecting role has permission to read information_schema and _prisma_migrations.',
       ],
+      baselineCandidates: [],
       warnings: [],
     };
   }
 
   const appliedRows = introspection.applied;
+  const userObjectCount = introspection.userObjectCount ?? introspection.userTableCount;
   const successful = appliedRows.filter(
     (row) => row.finishedAt !== null && row.rolledBackAt === null
   );
@@ -161,20 +173,7 @@ export const classifyMigrationState = ({
   );
   const rolledBack = appliedRows.filter((row) => row.rolledBackAt !== null);
   const pending = localMigrations.filter((name) => !appliedNames.includes(name));
-  const unknown = appliedNames.filter((name) => !localMigrations.includes(name));
   const warnings: string[] = [];
-
-  if (introspection.empty && !introspection.hasMigrationsTable) {
-    return {
-      kind: 'new',
-      summary: `Empty database - ${localMigrations.length} migration${
-        localMigrations.length === 1 ? '' : 's'
-      } to apply`,
-      pending: localMigrations,
-      reconciliation: [],
-      warnings,
-    };
-  }
 
   if (failed.length > 0) {
     return {
@@ -194,27 +193,23 @@ export const classifyMigrationState = ({
         'If it partially ran, first finish or revert the partial change by hand.',
         'Then rerun the update.',
       ],
+      baselineCandidates: [],
       warnings,
     };
   }
 
-  if (!introspection.empty && !introspection.hasMigrationsTable) {
-    return {
-      kind: 'baseline-required',
-      summary: `${introspection.userTableCount} existing tables with no _prisma_migrations history`,
-      pending,
-      reconciliation: baselineInstructions(targetId, localMigrations, []),
-      warnings,
-    };
-  }
-
-  if (unknown.length > 0) {
+  // Any history row absent from disk is divergent history, including a
+  // deliberately rolled-back attempt. Keeping it visible prevents a deleted
+  // migration directory from being mistaken for a clean pending state.
+  const unknownRows = appliedRows.filter((row) => !localMigrations.includes(row.name));
+  if (unknownRows.length > 0) {
+    const names = [...new Set(unknownRows.map((row) => row.name))];
     return {
       kind: 'unknown-migrations',
-      summary: `Database has ${unknown.length} migration${
-        unknown.length === 1 ? '' : 's'
-      } not present locally (${unknown.slice(0, 3).join(', ')}${
-        unknown.length > 3 ? ', ...' : ''
+      summary: `Database has ${names.length} migration${
+        names.length === 1 ? '' : 's'
+      } not present locally (${names.slice(0, 3).join(', ')}${
+        names.length > 3 ? ', ...' : ''
       })`,
       pending,
       reconciliation: [
@@ -222,6 +217,75 @@ export const classifyMigrationState = ({
         'Nothing has been changed and nothing was marked as applied.',
         'Pull the missing migration files, or reconcile the history deliberately before rerunning.',
       ],
+      baselineCandidates: [],
+      warnings,
+    };
+  }
+
+  const contradictoryRows = appliedRows.filter(
+    (row) => row.finishedAt !== null && row.rolledBackAt !== null
+  );
+  const successfulCounts = new Map<string, number>();
+  for (const row of successful) {
+    successfulCounts.set(row.name, (successfulCounts.get(row.name) || 0) + 1);
+  }
+  const duplicateSuccesses = [...successfulCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name);
+
+  if (contradictoryRows.length > 0 || duplicateSuccesses.length > 0) {
+    return {
+      kind: 'history-mismatch',
+      summary:
+        contradictoryRows.length > 0
+          ? 'Migration history contains rows marked both finished and rolled back'
+          : `Migration history contains duplicate successful records (${duplicateSuccesses
+              .slice(0, 3)
+              .join(', ')})`,
+      pending,
+      reconciliation: [
+        'The _prisma_migrations audit trail is internally inconsistent.',
+        'Nothing has been changed. Inspect and reconcile the history explicitly before rerunning.',
+      ],
+      baselineCandidates: [],
+      warnings,
+    };
+  }
+
+  if (introspection.empty) {
+    if (successful.length > 0) {
+      return {
+        kind: 'history-mismatch',
+        summary: 'Migration history records successful migrations but the target schema has no user tables',
+        pending,
+        reconciliation: [
+          'The schema and _prisma_migrations audit trail disagree.',
+          'Nothing has been changed. Do not delete history or mark migrations automatically.',
+        ],
+        baselineCandidates: [],
+        warnings,
+      };
+    }
+
+    return {
+      kind: 'new',
+      summary: `Empty database - ${localMigrations.length} migration${
+        localMigrations.length === 1 ? '' : 's'
+      } to apply`,
+      pending: localMigrations,
+      reconciliation: [],
+      baselineCandidates: [],
+      warnings,
+    };
+  }
+
+  if (!introspection.empty && !introspection.hasMigrationsTable) {
+    return {
+      kind: 'baseline-required',
+      summary: `${userObjectCount} existing schema objects with no _prisma_migrations history`,
+      pending,
+      reconciliation: baselineInstructions(targetId, localMigrations, []),
+      baselineCandidates: localMigrations,
       warnings,
     };
   }
@@ -234,47 +298,77 @@ export const classifyMigrationState = ({
   const mismatched = comparable.filter(
     (row) => !localChecksums[row.name].includes(row.checksum as string)
   );
-  const matchedCount = comparable.length - mismatched.length;
-
   if (mismatched.length > 0) {
-    if (matchedCount === 0 && comparable.length >= 3) {
-      // Every comparable checksum differs: almost certainly a systemic cause
-      // (checksum format or line-ending conversion), not individual edits.
-      warnings.push(
-        `All ${comparable.length} recorded migration checksums differ from the local files. ` +
-          'This is usually a line-ending or checksum-format difference, not an edit; ' +
-          'checksum validation was skipped for this database.'
-      );
-    } else {
-      const names = mismatched.map((row) => row.name);
-      return {
-        kind: 'history-mismatch',
-        summary: `${names.length} applied migration${
-          names.length === 1 ? '' : 's'
-        } differ${names.length === 1 ? 's' : ''} from the local SQL (${names
-          .slice(0, 3)
-          .join(', ')}${names.length > 3 ? ', ...' : ''})`,
-        pending,
-        reconciliation: [
-          'A migration file was edited after this database recorded it as applied.',
-          'The SQL that actually ran here is not the SQL in the working tree.',
-          'Nothing has been changed.',
-          '',
-          'Restore the original migration file from source control, or reconcile the',
-          'difference deliberately (a new migration for the delta is usually correct).',
-          'Do not edit applied migrations: their checksums are the audit trail.',
-        ],
-        warnings,
-      };
-    }
+    const names = mismatched.map((row) => row.name);
+    return {
+      kind: 'history-mismatch',
+      summary: `${names.length} applied migration${
+        names.length === 1 ? '' : 's'
+      } differ${names.length === 1 ? 's' : ''} from the local SQL (${names
+        .slice(0, 3)
+        .join(', ')}${names.length > 3 ? ', ...' : ''})`,
+      pending,
+      reconciliation: [
+        'A migration file was edited after this database recorded it as applied.',
+        'The SQL that actually ran here is not the SQL in the working tree.',
+        'Nothing has been changed.',
+        '',
+        'Restore the original migration file from source control, or reconcile the',
+        'difference deliberately (a new migration for the delta is usually correct).',
+        'Do not edit applied migrations: their checksums are the audit trail.',
+      ],
+      baselineCandidates: [],
+      warnings,
+    };
   }
 
-  if (!introspection.empty && appliedNames.length === 0 && localMigrations.length > 0) {
+  const highestAppliedIndex = appliedNames.reduce(
+    (highest, name) => Math.max(highest, localMigrations.indexOf(name)),
+    -1
+  );
+  const historicalGaps = localMigrations
+    .slice(0, highestAppliedIndex + 1)
+    .filter((name) => !appliedNames.includes(name));
+  const rolledBackNames = new Set(rolledBack.map((row) => row.name));
+
+  if (historicalGaps.some((name) => rolledBackNames.has(name))) {
+    return {
+      kind: 'history-mismatch',
+      summary: 'A rolled-back migration appears before a later successful migration',
+      pending,
+      reconciliation: [
+        'Migration history is not a completed prefix of the committed history.',
+        'Do not mark it applied automatically. Inspect the explicit failed-migration recovery that occurred.',
+      ],
+      baselineCandidates: [],
+      warnings,
+    };
+  }
+
+  if (historicalGaps.length > 0) {
     return {
       kind: 'baseline-required',
-      summary: `${introspection.userTableCount} existing tables but no applied migrations recorded`,
+      summary: `${historicalGaps.length} earlier committed migration${
+        historicalGaps.length === 1 ? ' is' : 's are'
+      } missing before already recorded history`,
       pending,
       reconciliation: baselineInstructions(targetId, localMigrations, appliedNames),
+      baselineCandidates: historicalGaps,
+      warnings,
+    };
+  }
+
+  if (
+    appliedNames.length === 0 &&
+    rolledBack.length === 0 &&
+    localMigrations.length > 0
+  ) {
+    return {
+      kind: 'baseline-required',
+      summary: `${userObjectCount} existing schema objects but no applied migrations recorded`,
+      pending,
+      reconciliation: baselineInstructions(targetId, localMigrations, appliedNames),
+      baselineCandidates: localMigrations,
       warnings,
     };
   }
@@ -302,6 +396,7 @@ export const classifyMigrationState = ({
       summary: 'Already up to date',
       pending: [],
       reconciliation: [],
+      baselineCandidates: [],
       warnings,
     };
   }
@@ -313,6 +408,7 @@ export const classifyMigrationState = ({
     }: ${pending.slice(0, 3).join(', ')}${pending.length > 3 ? ', ...' : ''}`,
     pending,
     reconciliation: [],
+    baselineCandidates: [],
     warnings,
   };
 };

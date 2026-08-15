@@ -16,6 +16,7 @@ export interface IntrospectionResult {
   hasMigrationsTable: boolean;
   databaseMissing: boolean;
   userTableCount: number;
+  userObjectCount: number;
   applied: AppliedMigrationRow[];
   /** The PostgreSQL schema that was inspected (from the URL's ?schema=, default public). */
   schemaName?: string;
@@ -33,6 +34,7 @@ const UNREACHABLE: Omit<IntrospectionResult, 'error'> = {
   hasMigrationsTable: false,
   databaseMissing: false,
   userTableCount: 0,
+  userObjectCount: 0,
   applied: [],
 };
 
@@ -91,6 +93,52 @@ export const introspectDatabase: IntrospectFn = async (
       [schemaName]
     );
 
+    const objects = await client.query(
+      `WITH user_relations AS (
+         SELECT c.oid
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = $1
+            AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+            AND c.relname <> '_prisma_migrations'
+            AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+               WHERE d.classid = 'pg_class'::regclass
+                 AND d.objid = c.oid
+                 AND d.deptype = 'e'
+            )
+       ), user_types AS (
+         SELECT t.oid
+           FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+          WHERE n.nspname = $1
+            AND t.typtype IN ('e', 'd')
+            AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+               WHERE d.classid = 'pg_type'::regclass
+                 AND d.objid = t.oid
+                 AND d.deptype = 'e'
+            )
+       ), user_routines AS (
+         SELECT p.oid
+           FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = $1
+            AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+               WHERE d.classid = 'pg_proc'::regclass
+                 AND d.objid = p.oid
+                 AND d.deptype = 'e'
+            )
+       )
+       SELECT (
+         (SELECT COUNT(*) FROM user_relations) +
+         (SELECT COUNT(*) FROM user_types) +
+         (SELECT COUNT(*) FROM user_routines)
+       )::text AS count`,
+      [schemaName]
+    );
+
     const migrationsTable = await client.query(
       `SELECT EXISTS (
          SELECT 1
@@ -102,6 +150,7 @@ export const introspectDatabase: IntrospectFn = async (
     );
 
     const userTableCount = Number(tables.rows[0]?.count || '0');
+    const userObjectCount = Number(objects.rows[0]?.count || '0');
     const hasMigrationsTable = Boolean(migrationsTable.rows[0]?.exists);
 
     let applied: AppliedMigrationRow[] = [];
@@ -121,10 +170,11 @@ export const introspectDatabase: IntrospectFn = async (
 
     return {
       reachable: true,
-      empty: userTableCount === 0,
+      empty: userObjectCount === 0,
       hasMigrationsTable,
       databaseMissing: false,
       userTableCount,
+      userObjectCount,
       applied,
       schemaName,
     };

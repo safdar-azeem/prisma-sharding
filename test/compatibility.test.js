@@ -29,6 +29,7 @@ const EXPECTED_BINARIES = {
   'prisma-sharding-update': './dist/cli/update.js',
   'prisma-sharding-migrate': './dist/cli/migrate.js',
   'prisma-sharding-baseline': './dist/cli/baseline.js',
+  'prisma-sharding-verify-bootstrap': './dist/cli/verify-bootstrap.js',
   'prisma-sharding-push': './dist/cli/push.js',
   'prisma-studio-next': './dist/cli/studio.js',
   'prisma-sharding-test': './dist/cli/test.js',
@@ -41,6 +42,7 @@ const createClient = (shardId) => ({
 });
 
 test('package entry points, CLI names, and existing exports remain compatible', () => {
+  assert.equal(packageJson.version, '1.3.0');
   assert.equal(packageJson.main, 'dist/index.js');
   assert.equal(packageJson.module, 'dist/index.mjs');
   assert.equal(packageJson.types, 'dist/index.d.ts');

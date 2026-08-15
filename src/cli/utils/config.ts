@@ -15,6 +15,22 @@ export interface LegacyBaselineConfig {
   verified?: boolean;
 }
 
+/**
+ * Source-controlled attestation that this exact migration history was validated
+ * from empty in a genuinely disposable PostgreSQL environment (for example an
+ * isolated CI service/container, not another schema in a production database).
+ */
+export interface BootstrapHistoryConfig {
+  /** Must be the earliest committed migration and must construct the schema from zero. */
+  initialMigration: string;
+  /** SHA-256 digest reported by prisma-sharding for the complete normalised history. */
+  historyDigest: string;
+  /** SHA-256 digest of the exact Prisma datamodel validated with this history. */
+  schemaDigest: string;
+  /** Explicit human/CI attestation that the pinned history passed isolated validation. */
+  verified?: boolean;
+}
+
 export interface PostgresExtensionConfig {
   /** PostgreSQL extension name as listed by pg_available_extensions. */
   name: string;
@@ -24,11 +40,12 @@ export interface PostgresExtensionConfig {
 
 export interface ShardingProjectConfig {
   postgresql?: {
-    /** Idempotently provisioned before the db-push fallback runs. */
+    /** Idempotently provisioned before schema push or pending migration deployment. */
     extensions?: PostgresExtensionConfig[];
   };
   migrations?: {
     legacyBaseline?: LegacyBaselineConfig;
+    bootstrap?: BootstrapHistoryConfig;
   };
 }
 
