@@ -398,7 +398,7 @@ test('baseline prints a reviewable plan and changes nothing without --yes', asyn
   }
 });
 
-test('baseline executes on --yes alone; --verified is only an acknowledgement', async () => {
+test('baseline refuses --yes without the explicit --verified attestation', async () => {
   const fakeBin = createFakeNpx();
   const commandLog = path.join(fakeBin, 'commands.log');
   const project = createMigrationsProject([
@@ -414,8 +414,10 @@ test('baseline executes on --yes alone; --verified is only an acknowledgement', 
       project
     );
 
-    assert.doesNotMatch(result.stdout, /Refusing to execute without --verified/);
-    assert.match(result.stdout, /Baselined migrations never run their SQL/);
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /--verified is required with --yes/);
+    assert.match(result.stdout, /Nothing was changed/);
+    assert.equal(readLog(commandLog), '', 'no Prisma command may run without --verified');
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
     fs.rmSync(project, { recursive: true, force: true });
