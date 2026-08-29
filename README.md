@@ -12,7 +12,9 @@ npm install prisma-sharding
 
 > Don't forget to follow me on [GitHub](https://github.com/safdar-azeem)!
 
-## Step 1: Create Sharding Connection
+## Quick Start
+
+### 1. Configure Shards
 
 ```typescript
 // src/config/prisma.ts
@@ -21,7 +23,7 @@ import { PrismaSharding } from 'prisma-sharding';
 import { PrismaClient } from '@/generated/prisma';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-const sharding = new PrismaSharding<PrismaClient>({
+export const sharding = new PrismaSharding<PrismaClient>({
   shards: [
     { id: 'shard_1', url: process.env.SHARD_1_URL! },
     { id: 'shard_2', url: process.env.SHARD_2_URL! },
@@ -35,6 +37,26 @@ const sharding = new PrismaSharding<PrismaClient>({
 
 await sharding.connect();
 ```
+
+### 2. Update Database & Shards
+
+Add `prisma-sharding-update` to your `package.json`:
+
+```json
+{
+  "scripts": {
+    "db:update": "prisma-sharding-update"
+  }
+}
+```
+
+Whenever you create or change your schema and migrations, run:
+
+```bash
+yarn db:update
+```
+
+`yarn db:update` is the normal database workflow: it automatically generates the Prisma Client and applies committed migrations across all configured databases and shards in one step. Separate generate/migrate commands are not needed.
 
 ## API
 
