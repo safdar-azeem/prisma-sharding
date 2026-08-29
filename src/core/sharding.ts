@@ -1,8 +1,11 @@
 import type {
   ShardingConfig,
   ShardHealth,
+  ShardInspection,
   FindFirstResult,
   CrossShardResult,
+  ShardFindResult,
+  ShardRunResult,
   ShardingLogger,
   ShardResult,
 } from '../types';
@@ -124,30 +127,89 @@ export class PrismaSharding<TClient> {
     }
   }
 
-  getShard(key: string): TClient {
+  private resolveShardByKey(key: string): ShardResult<TClient> {
     this.ensureConnected();
     const shardId = this.router!.getShardId(key);
+    return { shardId, client: this.manager!.getClient(shardId) };
+  }
+
+  private resolveRandomShard(): ShardResult<TClient> {
+    this.ensureConnected();
+    const shardId = this.router!.getRandomShardId();
+    return { shardId, client: this.manager!.getClient(shardId) };
+  }
+
+  async allocateShard(key: string): Promise<TClient> {
+    return this.resolveShardByKey(key).client;
+  }
+
+  async resolveShard(key: string): Promise<TClient> {
+    return this.resolveShardByKey(key).client;
+  }
+
+  selectShard(shardId: string): TClient {
+    this.ensureConnected();
     return this.manager!.getClient(shardId);
+  }
+
+  randomShard(): TClient {
+    return this.resolveRandomShard().client;
+  }
+
+  async findAcrossShards<T>(
+    finder: (client: TClient) => Promise<T | null>
+  ): Promise<ShardFindResult<T, TClient>> {
+    this.ensureConnected();
+
+    const { result, shardId } = await this.manager!.findFirst(finder);
+
+    if (result !== null && shardId !== null) {
+      return {
+        data: result,
+        shardId,
+        client: this.manager!.getClient(shardId),
+      };
+    }
+
+    return { data: null, shardId: null, client: null };
+  }
+
+  async runAcrossShards<T>(
+    operation: (client: TClient, shardId: string) => Promise<T>
+  ): Promise<ShardRunResult<T>[]> {
+    this.ensureConnected();
+
+    const results = await this.manager!.executeOnAll(operation);
+    return results.map((r) => ({
+      shardId: r.shardId,
+      data: r.result,
+      error: r.error ?? null,
+    }));
+  }
+
+  inspectShards(): ShardInspection[] {
+    this.ensureConnected();
+    return this.manager!.getAllHealth().map((h) => ({
+      shardId: h.shardId,
+      status: h.isHealthy ? 'healthy' : 'unhealthy',
+      latencyMs: h.isHealthy && h.latencyMs >= 0 ? h.latencyMs : null,
+    }));
+  }
+
+  getShard(key: string): TClient {
+    return this.resolveShardByKey(key).client;
   }
 
   getShardById(shardId: string): TClient {
-    this.ensureConnected();
-    return this.manager!.getClient(shardId);
+    return this.selectShard(shardId);
   }
 
   getShardWithInfo(key: string): ShardResult<TClient> {
-    this.ensureConnected();
-    const shardId = this.router!.getShardId(key);
-    return {
-      shardId,
-      client: this.manager!.getClient(shardId),
-    };
+    return this.resolveShardByKey(key);
   }
 
   getRandomShard(): TClient {
-    this.ensureConnected();
-    const shardId = this.router!.getRandomShardId();
-    return this.manager!.getClient(shardId);
+    return this.resolveRandomShard().client;
   }
 
   /**
@@ -155,30 +217,18 @@ export class PrismaSharding<TClient> {
    * Used when the shardId must be stored on the user record for future routing.
    */
   getRandomShardWithInfo(): ShardResult<TClient> {
-    this.ensureConnected();
-    const shardId = this.router!.getRandomShardId();
-    return {
-      shardId,
-      client: this.manager!.getClient(shardId),
-    };
+    return this.resolveRandomShard();
   }
 
   async findFirst<T>(
     finder: (client: TClient) => Promise<T | null>
   ): Promise<FindFirstResult<T, TClient>> {
-    this.ensureConnected();
-
-    const { result, shardId } = await this.manager!.findFirst(finder);
-
-    if (result !== null && shardId !== null) {
-      return {
-        result,
-        shardId,
-        client: this.manager!.getClient(shardId),
-      };
-    }
-
-    return { result: null, shardId: null, client: null };
+    const found = await this.findAcrossShards(finder);
+    return {
+      result: found.data,
+      shardId: found.shardId,
+      client: found.client,
+    };
   }
 
   async runOnAll<T>(operation: (client: TClient, shardId: string) => Promise<T>): Promise<T[]> {
