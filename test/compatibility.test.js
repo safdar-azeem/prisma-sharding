@@ -9,6 +9,13 @@ const PUBLIC_METHODS = [
   'connect',
   'disconnect',
   'isConnected',
+  'allocateShard',
+  'resolveShard',
+  'selectShard',
+  'randomShard',
+  'findAcrossShards',
+  'runAcrossShards',
+  'inspectShards',
   'getShard',
   'getShardById',
   'getShardWithInfo',
@@ -160,8 +167,85 @@ test('public method names and return shapes remain compatible', async () => {
     'latencyMs',
     'shardId',
   ]);
-  assert.equal(sharding.getHealthByShard('missing'), undefined);
+  // Canonical public methods
+  const allocated = await sharding.allocateShard('canonical-key');
+  assert.ok(clients.has(allocated.shardId));
+
+  const resolved = await sharding.resolveShard('canonical-key');
+  assert.equal(resolved, allocated);
+
+  const selected = sharding.selectShard('shard_1');
+  assert.equal(selected, clients.get('shard_1'));
+
+  const randomCanonical = sharding.randomShard();
+  assert.ok(clients.has(randomCanonical.shardId));
+
+  const foundAcross = await sharding.findAcrossShards(async (client) =>
+    client.shardId === 'shard_2' ? { id: 'found' } : null
+  );
+  assert.deepEqual(Object.keys(foundAcross).sort(), ['client', 'data', 'shardId']);
+  assert.deepEqual(foundAcross.data, { id: 'found' });
+  assert.equal(foundAcross.shardId, 'shard_2');
+  assert.equal(foundAcross.client, clients.get('shard_2'));
+
+  const notFoundAcross = await sharding.findAcrossShards(async () => null);
+  assert.deepEqual(notFoundAcross, { data: null, shardId: null, client: null });
+
+  const runAcross = await sharding.runAcrossShards(async (_client, shardId) => shardId);
+  assert.deepEqual(runAcross, [
+    { shardId: 'shard_1', data: 'shard_1', error: null },
+    { shardId: 'shard_2', data: 'shard_2', error: null },
+  ]);
+
+  const inspected = sharding.inspectShards();
+  assert.equal(inspected.length, 2);
+  assert.deepEqual(Object.keys(inspected[0]).sort(), ['latencyMs', 'shardId', 'status']);
+  assert.equal(inspected[0].status, 'healthy');
 
   assert.equal(await sharding.disconnect(), undefined);
   assert.equal(sharding.isConnected(), false);
 });
+
+test('TypeScript public type-compatibility fixture exists and covers all public contracts', () => {
+  const fs = require('node:fs');
+  const fixturePath = path.resolve(__dirname, 'type-compatibility.fixture.ts');
+
+  // The fixture must exist — it is compiled by `tsc -p tsconfig.typecheck-compat.json`
+  // as part of `yarn typecheck`. A type error inside the fixture will cause that
+  // compilation step to fail.
+  assert.ok(
+    fs.existsSync(fixturePath),
+    'test/type-compatibility.fixture.ts must exist for compile-time public contract validation'
+  );
+
+  const fixtureSource = fs.readFileSync(fixturePath, 'utf8');
+
+  // Verify the fixture imports from the published declaration surface (dist/),
+  // not from the source barrel (src/).
+  assert.ok(
+    fixtureSource.includes("from '../dist'"),
+    'Fixture must import from the published declaration surface (../dist), not ../src'
+  );
+  assert.ok(
+    !fixtureSource.includes("from '../src'"),
+    'Fixture must not import from ../src — it must validate the published declaration surface'
+  );
+
+  // Verify the fixture imports and exercises all required public types.
+  const requiredTypes = [
+    'ShardHealth',
+    'ShardInspection',
+    'ShardFindResult',
+    'ShardRunResult',
+    'FindFirstResult',
+    'CrossShardResult',
+    'PrismaSharding',
+  ];
+  for (const typeName of requiredTypes) {
+    assert.ok(
+      fixtureSource.includes(typeName),
+      `Fixture must reference public type '${typeName}'`
+    );
+  }
+});
+
