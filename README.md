@@ -38,131 +38,124 @@ await sharding.connect();
 
 ## API
 
-| Method                       | Description                                    |
-| ---------------------------- | ---------------------------------------------- |
-| `getShard(key)`              | Deterministic client for a routing key         |
-| `getShardById(shardId)`      | Client for a persisted shard owner             |
-| `getRandomShard()`           | Random assignment; ownership must be recorded  |
-| `findFirst(fn)`              | Bounded exception-path search across shards    |
-| `runOnAll(fn)`               | Bounded admin/analytics execution              |
-| `getHealth()`                | Health status using the existing output shape  |
-| `connect()` / `disconnect()` | Lifecycle methods                              |
+| Method                       | Description                                                     | Return Contract                                                                |
+| ---------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `connect()`                  | Connect and initialize all shard clients                        | `Promise<void>`                                                                |
+| `allocateShard(routingKey)`  | Resolve client for a new routing key via deterministic routing  | `Promise<TClient>`                                                             |
+| `resolveShard(routingKey)`   | Resolve client for an existing routing key                      | `Promise<TClient>`                                                             |
+| `selectShard(shardId)`       | Direct physical shard client access by ID                       | `TClient`                                                                      |
+| `randomShard()`              | Direct random shard client                                      | `TClient`                                                                      |
+| `findAcrossShards(fn)`       | Bounded search across shards until first non-null match         | `Promise<{ data: T \| null, shardId: string \| null, client: TClient \| null }>` |
+| `runAcrossShards(fn)`        | Execute operation across every shard and collect results/errors | `Promise<Array<{ shardId: string, data: T \| null, error: Error \| null }>>`  |
+| `inspectShards()`            | Inspect health status and latency across all shards             | `Array<{ shardId: string, status: 'healthy' \| 'unhealthy' \| 'unknown', latencyMs: number \| null }>` |
+| `disconnect()`               | Graceful shutdown of all shard connections                      | `Promise<void>`                                                                |
 
-## Shard Ownership
+## Shard Operations
 
-Every record needs one authoritative shard owner. Choose one of these patterns and use it
-consistently. Cross-shard search is a recovery path, not an ownership strategy.
+### Allocating & Resolving Shards
 
-### Pattern A: Deterministic Ownership
+`allocateShard()` and `resolveShard()` provide the canonical interface for interacting with single-shard keys:
 
-Generate or obtain the routing key before inserting the record, then use the same key for every
-future operation:
+- **`allocateShard(routingKey)`**: Resolves a client for a new routing key using the configured deterministic routing strategy. *(Note: in this transitional version, it uses deterministic hash routing and does not store persistent ownership/placement records).*
+- **`resolveShard(routingKey)`**: Resolves a client for an existing routing key asynchronously.
+
+While `allocateShard()` and `resolveShard()` currently resolve through the same underlying deterministic router, they are separate public APIs to allow the internal allocation mechanism to evolve to persistent ownership in future releases without breaking application code:
 
 ```typescript
 import { sharding } from '@/config/prisma';
 
-const userId = crypto.randomUUID();
-const client = sharding.getShard(userId);
-const user = await client.user.create({
-  data: { id: userId, email: 'user@example.com', username: 'new_user' },
+const userId = 'user_123';
+
+// Allocate client for a new record key
+const db = await sharding.allocateShard(userId);
+const user = await db.user.create({
+  data: { id: userId, email: 'user@example.com', name: 'John Doe' },
 });
 
-const sameUser = await sharding.getShard(userId).user.findUnique({
+// Resolve client for an existing record key
+const userDb = await sharding.resolveShard(userId);
+const sameUser = await userDb.user.findUnique({
   where: { id: userId },
 });
 ```
 
-Modulo routing uses the existing `hashString(key) % shardCount` placement. The hash function and
-configured shard order are data-placement contracts: changing either can move existing records and
-requires an explicit migration or dual-read plan. Consistent hashing also preserves configured
-shard IDs and supports custom IDs such as `tenant-east`.
+Modulo routing uses deterministic `hashString(key) % shardCount` placement. Consistent hashing also preserves configured shard IDs and supports custom IDs such as `tenant-east`.
 
-### Pattern B: Assigned Ownership
-
-Random assignment can distribute new records, but the application must persist the assigned shard
-ID in a directory table, tenant registry, or equivalent ownership metadata:
+### Direct & Random Shard Access
 
 ```typescript
-const { client, shardId } = sharding.getRandomShardWithInfo();
-const user = await client.user.create({ data: { email, username } });
+// Direct physical shard access
+const db = sharding.selectShard('shard_1');
 
-await shardDirectory.create({ data: { recordId: user.id, shardId } });
-
-const ownership = await shardDirectory.findUniqueOrThrow({
-  where: { recordId: user.id },
-});
-const sameUser = await sharding
-  .getShardById(ownership.shardId)
-  .user.findUnique({ where: { id: user.id } });
+// Random shard client directly
+const randomDb = sharding.randomShard();
 ```
 
-The existing `getRandomShard()` method still returns only a client. Calling it for a write and
-later calling `getShard(record.id)` is **not guaranteed to select the same shard**. If you use
-`getRandomShard()`, your application needs another reliable way to record which shard was selected.
-`weight` affects random assignment only; it never changes deterministic `getShard(key)` placement.
+### Searching Across Shards
 
-### Find Without Ownership Metadata
-
-`findFirst()` is bounded, timed, health-aware, and returns when the first non-null result arrives.
-Even so, one call can create work on multiple databases. Treat it as an exception, recovery, or
-administrative path. At high traffic it should not be the normal login, email lookup, user lookup,
-or tenant lookup path; maintain shard ownership metadata instead.
+`findAcrossShards()` searches shards with bounded concurrency and returns once the first non-null match is found:
 
 ```typescript
-const { result: user, client } = await sharding.findFirst(async (c) =>
-  c.user.findFirst({ where: { email } })
-);
+const found = await sharding.findAcrossShards(async (db) => {
+  return db.user.findUnique({
+    where: { email: 'user@example.com' },
+  });
+});
 
-if (user && client) {
-  // Continue operations on the found shard
-  await client.user.update({
-    where: { id: user.id },
+if (found.data) {
+  console.log(`Found user on ${found.shardId}:`, found.data);
+  // found.client provides direct access to the owning shard client
+  await found.client.user.update({
+    where: { id: found.data.id },
     data: { lastLogin: new Date() },
   });
 }
 ```
 
-### Run on All Shards
+### Running Across All Shards
+
+`runAcrossShards()` executes a callback across all shards and returns a structured outcome per shard, preserving any failures:
 
 ```typescript
-// Appropriate for bounded admin or analytics work, not a normal request path.
-const counts = await sharding.runOnAll(async (client) => client.user.count());
-const totalUsers = counts.reduce((sum, count) => sum + count, 0);
-
-// With detailed results (includes errors)
-const results = await sharding.runOnAllWithDetails(async (client, shardId) => {
-  return { shardId, count: await client.user.count() };
+const results = await sharding.runAcrossShards(async (db) => {
+  return db.user.count();
 });
+
+for (const result of results) {
+  if (result.error) {
+    console.error(`Shard ${result.shardId} error:`, result.error);
+  } else {
+    console.log(`Shard ${result.shardId} count:`, result.data);
+  }
+}
 ```
 
-### Health Monitoring
+### Health Inspection
 
-`connect()` initializes all clients and starts background warmup for clients that implement
-`$connect()`, followed by an initial `SELECT 1` when `$queryRaw` is available. Warmup does not delay
-client availability, preserving existing startup behavior. Periodic checks have a deadline, cannot
-overlap, and update the existing `ShardHealth` shape. Deterministic routing still returns the
-record's owner when it is marked unhealthy; cross-shard work schedules healthy, lower-latency
-shards first.
+`inspectShards()` returns the normalized health status and latency for every shard:
 
 ```typescript
-// Get health of all shards
-const health = sharding.getHealth();
-// Returns: [{ shardId, isHealthy, latencyMs, lastChecked, ... }]
-
-// Get specific shard health
-const shard1Health = sharding.getHealthByShard('shard_1');
+const health = sharding.inspectShards();
+// Returns:
+// [
+//   { shardId: 'shard_1', status: 'healthy', latencyMs: 14 },
+//   { shardId: 'shard_2', status: 'unhealthy', latencyMs: null }
+// ]
 ```
 
 ### Lifecycle
 
 ```typescript
-// Graceful shutdown
-await sharding.disconnect();
+// Connect and initialize
+await sharding.connect();
 
 // Check connection status
 if (sharding.isConnected()) {
   // ...
 }
+
+// Graceful shutdown
+await sharding.disconnect();
 ```
 
 ## CLI Tools
@@ -957,14 +950,15 @@ strategy: 'consistent-hash';
 
 ## Architecture and Scaling
 
-The public `PrismaSharding` layer validates and delegates without changing its established surface.
+The public `PrismaSharding` layer exposes the canonical public API (`allocateShard`, `resolveShard`, `selectShard`, `randomShard`, `findAcrossShards`, `runAcrossShards`, `inspectShards`) while retaining backward-compatible wrappers for legacy methods. Multi-shard operations return structured, shard-aware results (`ShardFindResult`, `ShardRunResult`, `ShardInspection`).
+
 Internally, the router owns key placement, the manager owns clients and health state, and one
 cross-shard executor owns concurrency, deadlines, health-aware scheduling, stable result ordering,
 and failure isolation. CLI commands share one shard parser and one sanitized child-process runner.
 
 | Layer | Responsibility |
 | --- | --- |
-| Public API | Validate, delegate, and preserve existing result shapes |
+| Public API | Canonical public surface with structured results and backward-compatible wrappers |
 | Router | Stable deterministic placement and weighted random assignment |
 | Shard manager | Client lifecycle, initial verification, health, and shutdown |
 | Cross-shard executor | Shared concurrency, deadlines, ordering, and failure isolation |
@@ -972,8 +966,8 @@ and failure isolation. CLI commands share one shard parser and one sanitized chi
 
 Low-level execution behavior is intentionally internal: fan-out concurrency and deadlines are
 central defaults, the hash function is unchanged, health checks use typed Prisma-like capability
-guards, successful `runOnAll()` results retain configured shard order, and errors stay isolated in
-the existing detailed result shape.
+guards, and cross-shard execution results retain configured shard order while keeping errors isolated in
+structured result shapes.
 
 Normal request flow should be:
 
@@ -981,9 +975,9 @@ Normal request flow should be:
 routing key or directory lookup -> one shard -> one Prisma operation
 ```
 
-`findFirst()` and `runOnAll()` use bounded concurrency and per-shard deadlines, but they still
+`findAcrossShards()` and `runAcrossShards()` use bounded concurrency and per-shard deadlines, but they still
 multiply database work and tail-latency exposure. Reserve them for recovery, administration, and
-analytics. Pending Prisma queries may not be cancellable after an early `findFirst()` result, so
+analytics. Pending Prisma queries may not be cancellable after an early `findAcrossShards()` result, so
 the caller can resolve before all already-started database work has physically stopped.
 
 The executor deadline limits how long the package waits; it does **not** cancel the underlying
@@ -1011,7 +1005,7 @@ headroom. The sharding package does not create hidden extra Prisma clients.
 import { ShardingError, ConfigError, ConnectionError } from 'prisma-sharding';
 
 try {
-  const client = sharding.getShard(userId);
+  const client = await sharding.resolveShard(userId);
 } catch (error) {
   if (error instanceof ConnectionError) {
     console.error(`Shard ${error.shardId} unavailable`);
