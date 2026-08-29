@@ -125,7 +125,8 @@ yarn build
 cd examples/example-1
 cp .env.example .env
 yarn
-yarn db:generate
 yarn db:update
 yarn dev
 ```
+
+`yarn db:update` is the single command for database updates: it automatically generates the Prisma Client and applies committed migrations to all configured shards.
