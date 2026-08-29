@@ -51,7 +51,7 @@
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "test": "yarn build && node --test test/*.test.js",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/studio-host/shell",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/studio-host/shell && tsc -p tsconfig.typecheck-compat.json",
     "prepublishOnly": "yarn build",
     "patch": "yarn version --patch && yarn publish",
     "minor": "yarn version --minor && yarn publish",
