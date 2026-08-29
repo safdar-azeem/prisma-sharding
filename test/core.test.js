@@ -434,3 +434,159 @@ test('health checks time out and leave an unverified shard unhealthy', async () 
     await sharding.disconnect();
   }
 });
+
+test('allocateShard and resolveShard return clients deterministically as promises', async () => {
+  const ids = ['shard_1', 'shard_2', 'shard_3'];
+  const sharding = createSharding(ids);
+  await sharding.connect();
+
+  try {
+    for (const key of ['user_100', 'user_200', 'account_abc', 'tenant_xyz']) {
+      const allocated = await sharding.allocateShard(key);
+      const resolved = await sharding.resolveShard(key);
+      const expectedShardId = ids[library.hashString(key) % ids.length];
+
+      assert.equal(allocated.shardId, expectedShardId);
+      assert.equal(resolved.shardId, expectedShardId);
+      assert.equal(allocated, resolved);
+    }
+  } finally {
+    await sharding.disconnect();
+  }
+});
+
+test('selectShard returns the exact client synchronously and throws for unknown shard ID', async () => {
+  const sharding = createSharding(['shard_1', 'shard_2']);
+  await sharding.connect();
+
+  try {
+    const client1 = sharding.selectShard('shard_1');
+    assert.equal(client1.shardId, 'shard_1');
+
+    const client2 = sharding.selectShard('shard_2');
+    assert.equal(client2.shardId, 'shard_2');
+
+    assert.throws(
+      () => sharding.selectShard('does-not-exist'),
+      /Shard does-not-exist not found/
+    );
+  } finally {
+    await sharding.disconnect();
+  }
+});
+
+test('randomShard returns a client directly', async () => {
+  const sharding = createSharding(['shard_1', 'shard_2']);
+  await sharding.connect();
+
+  try {
+    const client = sharding.randomShard();
+    assert.ok(client.shardId === 'shard_1' || client.shardId === 'shard_2');
+    assert.equal(typeof client.$queryRaw, 'function');
+  } finally {
+    await sharding.disconnect();
+  }
+});
+
+test('findAcrossShards returns data, shardId, and client or null values when not found', async () => {
+  const sharding = createSharding(['shard_1', 'shard_2', 'shard_3']);
+  await sharding.connect();
+
+  try {
+    const found = await sharding.findAcrossShards(async (client) => {
+      if (client.shardId === 'shard_2') {
+        return { id: 'item_123', name: 'Test' };
+      }
+      return null;
+    });
+
+    assert.deepEqual(found.data, { id: 'item_123', name: 'Test' });
+    assert.equal(found.shardId, 'shard_2');
+    assert.equal(found.client.shardId, 'shard_2');
+
+    const notFound = await sharding.findAcrossShards(async () => null);
+    assert.deepEqual(notFound, {
+      data: null,
+      shardId: null,
+      client: null,
+    });
+  } finally {
+    await sharding.disconnect();
+  }
+});
+
+test('runAcrossShards returns structured results for every shard without dropping errors', async () => {
+  const sharding = createSharding(['shard_1', 'shard_2', 'shard_3']);
+  await sharding.connect();
+
+  try {
+    const results = await sharding.runAcrossShards(async (_client, shardId) => {
+      if (shardId === 'shard_2') {
+        throw new Error('shard 2 failed');
+      }
+      return `result-${shardId}`;
+    });
+
+    assert.equal(results.length, 3);
+
+    assert.equal(results[0].shardId, 'shard_1');
+    assert.equal(results[0].data, 'result-shard_1');
+    assert.equal(results[0].error, null);
+
+    assert.equal(results[1].shardId, 'shard_2');
+    assert.equal(results[1].data, null);
+    assert.match(results[1].error.message, /shard 2 failed/);
+
+    assert.equal(results[2].shardId, 'shard_3');
+    assert.equal(results[2].data, 'result-shard_3');
+    assert.equal(results[2].error, null);
+  } finally {
+    await sharding.disconnect();
+  }
+});
+
+test('inspectShards returns normalized public health shape with null latency for unhealthy shards', async () => {
+  let failShard2 = false;
+  const sharding = createSharding(['shard_1', 'shard_2'], {
+    healthCheckIntervalMs: 5,
+    circuitBreakerThreshold: 1,
+    createClient: (_url, shardId) => ({
+      shardId,
+      $connect: async () => undefined,
+      $queryRaw: async () => {
+        if (shardId === 'shard_2' && failShard2) {
+          throw new Error('shard_2 is down');
+        }
+        return 1;
+      },
+      $disconnect: async () => undefined,
+    }),
+  });
+
+  await sharding.connect();
+  try {
+    const initialHealth = sharding.inspectShards();
+    assert.equal(initialHealth.length, 2);
+    assert.deepEqual(
+      initialHealth.map((h) => ({ shardId: h.shardId, status: h.status })),
+      [
+        { shardId: 'shard_1', status: 'healthy' },
+        { shardId: 'shard_2', status: 'healthy' },
+      ]
+    );
+    assert.ok(initialHealth[0].latencyMs >= 0);
+
+    failShard2 = true;
+    await waitFor(() => sharding.getHealth()[1].isHealthy === false);
+
+    const degradedHealth = sharding.inspectShards();
+    assert.equal(degradedHealth[0].status, 'healthy');
+    assert.ok(degradedHealth[0].latencyMs >= 0);
+
+    assert.equal(degradedHealth[1].shardId, 'shard_2');
+    assert.equal(degradedHealth[1].status, 'unhealthy');
+    assert.equal(degradedHealth[1].latencyMs, null);
+  } finally {
+    await sharding.disconnect();
+  }
+});
