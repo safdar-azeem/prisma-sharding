@@ -20,6 +20,14 @@ export interface ShardHealth {
   consecutiveFailures: number;
 }
 
+export type ShardHealthStatus = 'healthy' | 'unhealthy' | 'unknown';
+
+export interface ShardInspection {
+  shardId: string;
+  status: ShardHealthStatus;
+  latencyMs: number | null;
+}
+
 export interface ShardInstance<TClient> {
   config: ShardConfig;
   client: TClient;
@@ -41,6 +49,18 @@ export interface FindFirstResult<T, TClient> {
   result: T | null;
   shardId: string | null;
   client: TClient | null;
+}
+
+export interface ShardFindResult<T, TClient> {
+  data: T | null;
+  shardId: string | null;
+  client: TClient | null;
+}
+
+export interface ShardRunResult<T> {
+  shardId: string;
+  data: T | null;
+  error: Error | null;
 }
 
 export type RoutingStrategy = 'modulo' | 'consistent-hash';
